@@ -1,4 +1,4 @@
-# cull-wizard
+# Distillr
 
 A native desktop tool for culling burst-shot photos fast: point it at a
 folder, it groups near-identical burst sequences by capture timestamp, and
@@ -57,7 +57,7 @@ cargo run --release
 `--release` matters here: JPEG decoding is meaningfully faster in release
 mode. A debug build works but feels sluggish on large folders.
 
-This launches the `cull-wizard` binary (from the `cw-app` crate). Click
+This launches the `distillr` binary (from the `cw-app` crate). Click
 **Choose folder…** and point it at a folder of JPEGs.
 
 ## Using it

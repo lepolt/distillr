@@ -11,7 +11,7 @@ const LOUPE_MAX_SIDE: u32 = 1400;
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions::default();
     eframe::run_native(
-        "cull-wizard",
+        "Distillr",
         options,
         Box::new(|_cc| Ok(Box::new(CullWizardApp::default()))),
     )
