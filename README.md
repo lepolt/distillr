@@ -16,14 +16,37 @@ codebase, no webview, native windows on macOS and Windows.
 - **Platforms:** actively developed and tested on macOS. Builds against the
   same cross-platform stack on Windows, but hasn't been validated there yet.
 
-## Requirements
+## Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install) (stable toolchain, via
-  `rustup`)
-- macOS or Windows with a graphical session (this is a native GUI app, not
-  a headless tool)
+- **Rust**, stable toolchain, via [rustup](https://rustup.rs):
 
-No other system dependencies — everything else is a Cargo crate.
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  ```
+
+  Verify with `rustc --version` and `cargo --version`. (If you installed
+  Rust via Homebrew's `rustup` formula instead, it's keg-only — add
+  `$(brew --prefix rustup)/bin` to your `PATH` and open a new shell before
+  those commands will work.)
+
+- **macOS:** the Xcode Command Line Tools, for the system linker/SDK that
+  some dependencies (native file dialogs, trash support) compile against:
+
+  ```bash
+  xcode-select --install
+  ```
+
+- **Windows:** the MSVC build tools (Rust's default Windows toolchain
+  needs them) — install via the
+  [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+  installer, "Desktop development with C++" workload. Untested by this
+  project so far (see Status above); flagging this in case you hit it.
+
+- A graphical session on macOS or Windows — this is a native GUI app, not
+  a headless/CI tool.
+
+No other system dependencies — everything else is a Cargo crate, fetched
+automatically on first build.
 
 ## Running it
 
