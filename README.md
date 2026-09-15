@@ -9,12 +9,17 @@ codebase, no webview, native windows on macOS and Windows.
 
 ## Status
 
-- **Formats:** JPEG only for now. RAW support (CR2/CR3, NEF, ARW, …) is
-  planned but not implemented.
+- **Formats:** JPEG, plus RAW (via [`rawler`](https://crates.io/crates/rawler) —
+  reads the embedded preview rather than demosaicing, so it stays fast).
+  Verified against real Nikon NEF files, including RAW+JPEG pairs (treated
+  as one photo — Finalize trashes or copies both halves together). Other
+  formats `rawler` supports (CR2/CR3, ARW, ORF, RW2, …) go through the same
+  code path but are untested. Portrait shots are rotated upright using the
+  file's EXIF orientation, for both JPEG and RAW.
 - **Sources:** any folder the OS gives you a path to — including a
   mounted SD card/camera volume (e.g. `/Volumes/NIKON/DCIM/100NIKON` on
   macOS). Scanning isn't recursive, so point **Choose folder…** at the
-  folder that directly contains the JPEGs, not a parent folder with
+  folder that directly contains the photos, not a parent folder with
   subfolders.
 - **Platforms:** actively developed and tested on macOS. Builds against the
   same cross-platform stack on Windows, but hasn't been validated there yet.
@@ -57,17 +62,18 @@ automatically on first build.
 cargo run --release
 ```
 
-`--release` matters here: JPEG decoding is meaningfully faster in release
-mode. A debug build works but feels sluggish on large folders.
+`--release` matters here: JPEG/RAW decoding is meaningfully faster in
+release mode. A debug build works but feels sluggish on large folders.
 
 This launches the `distillr` binary (from the `cw-app` crate). Click
-**Choose folder…** and point it at a folder of JPEGs.
+**Choose folder…** and point it at a folder of photos.
 
 ## Using it
 
-1. **Choose folder…** — pick a folder of JPEGs. They're scanned, grouped
-   into bursts by capture-time proximity, and shown as a grid, one section
-   per burst.
+1. **Choose folder…** — pick a folder of JPEGs and/or RAW files. They're
+   scanned (RAW+JPEG pairs merged into one photo each), grouped into
+   bursts by capture-time proximity, and shown as a grid, one section per
+   burst.
 2. **Review a burst** — click **Review** on a group, or double-click any
    thumbnail to jump straight to it.
    - `←` / `→` — navigate between photos in the burst
@@ -112,10 +118,11 @@ cargo test           # debug build — correct, but JPEG decode is slow
 cargo test --release # much faster; use this if you're iterating on tests
 ```
 
-The test suite runs against real JPEGs in `examples/` rather than mocked
-data. That folder isn't part of this repo (see `.gitignore`) since it's
-real camera photos — to run the full suite yourself, drop your own JPEGs
-in `examples/` at the repo root. Tests that check specific burst groupings
+The test suite runs against real photos (JPEG and NEF, including RAW+JPEG
+pairs and portrait shots) in `examples/` rather than mocked data. That
+folder isn't part of this repo (see `.gitignore`) since it's real camera
+photos — to run the full suite yourself, drop your own JPEG/RAW files in
+`examples/` at the repo root. Tests that check specific burst groupings
 expect a particular set of files (see `crates/cw-burst/src/lib.rs` and
 `crates/cw-app/src/main.rs` test modules for what they assume); tests that
 just need *some* real JPEGs will work with any of your own photos.

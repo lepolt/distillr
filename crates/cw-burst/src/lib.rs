@@ -1,8 +1,10 @@
-//! Burst-sequence detection: timestamp clustering, perceptual-hash
-//! refinement, and RAW+JPEG pairing.
+//! Burst-sequence detection: timestamp clustering and perceptual-hash
+//! refinement.
 //!
-//! Timestamp clustering only for now; perceptual-hash refinement and
-//! RAW+JPEG pairing come later, once there's a real case that needs them.
+//! Timestamp clustering only for now; perceptual-hash refinement comes
+//! later, once there's a real case that needs it. RAW+JPEG pairing lives
+//! upstream in `cw-scan` (`PhotoSource`) — by the time a photo becomes a
+//! `BurstItem` here, `path` is already the one path that represents it.
 
 use std::path::PathBuf;
 
@@ -11,6 +13,10 @@ use time::{Duration, PrimitiveDateTime};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BurstItem {
     pub path: PathBuf,
+    /// The paired RAW file, when `path` is a JPEG with a RAW file alongside
+    /// it (see `cw_scan::PhotoSource`). Carried through grouping so
+    /// Finalize can trash/copy it together with `path`.
+    pub sidecar: Option<PathBuf>,
     pub capture_time: PrimitiveDateTime,
 }
 
@@ -67,10 +73,11 @@ mod tests {
         cw_scan::scan_folder(&examples_dir())
             .unwrap()
             .into_iter()
-            .map(|path| {
-                let meta = cw_metadata::read_jpeg_metadata(&path).unwrap();
+            .map(|source| {
+                let meta = cw_metadata::read_metadata(&source.primary).unwrap();
                 BurstItem {
-                    path,
+                    path: source.primary,
+                    sidecar: source.sidecar,
                     capture_time: meta.capture_time,
                 }
             })
@@ -87,7 +94,9 @@ mod tests {
         let groups = group_bursts(items, DEFAULT_GAP_THRESHOLD);
 
         let sizes: Vec<usize> = groups.iter().map(BurstGroup::len).collect();
-        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6]);
+        // Original 6 JPEG bursts, then a 9-shot RAW+JPEG burst
+        // (DSC_3742-3750), then three portrait-JPEG bursts.
+        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10]);
 
         assert_eq!(file_name(&groups[0].items[0]), "DSC_3676.JPG");
         assert_eq!(
@@ -99,6 +108,24 @@ mod tests {
         assert_eq!(
             file_name(groups[5].items.last().unwrap()),
             "DSC_3741.JPG"
+        );
+
+        assert_eq!(file_name(&groups[6].items[0]), "DSC_3742.JPG");
+        assert_eq!(
+            groups[6].items[0].sidecar.as_deref().and_then(|p| p.file_name()),
+            Some(std::ffi::OsStr::new("DSC_3742.NEF")),
+        );
+        assert_eq!(
+            file_name(groups[6].items.last().unwrap()),
+            "DSC_3750.JPG"
+        );
+
+        assert_eq!(file_name(&groups[7].items[0]), "DSC_3751.JPG");
+        assert_eq!(file_name(&groups[8].items[0]), "DSC_3758.JPG");
+        assert_eq!(file_name(&groups[9].items[0]), "DSC_3766.JPG");
+        assert_eq!(
+            file_name(groups[9].items.last().unwrap()),
+            "DSC_3775.JPG"
         );
     }
 
@@ -119,12 +146,17 @@ mod tests {
         assert!(group_bursts(Vec::new(), DEFAULT_GAP_THRESHOLD).is_empty());
     }
 
+    fn item(name: &str, capture_time: PrimitiveDateTime) -> BurstItem {
+        BurstItem {
+            path: PathBuf::from(name),
+            sidecar: None,
+            capture_time,
+        }
+    }
+
     #[test]
     fn single_item_yields_one_group() {
-        let items = vec![BurstItem {
-            path: PathBuf::from("a.jpg"),
-            capture_time: PrimitiveDateTime::MIN,
-        }];
+        let items = vec![item("a.jpg", PrimitiveDateTime::MIN)];
         let groups = group_bursts(items, DEFAULT_GAP_THRESHOLD);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].len(), 1);
@@ -134,18 +166,9 @@ mod tests {
     fn gap_larger_than_threshold_splits_groups() {
         let base = PrimitiveDateTime::MIN;
         let items = vec![
-            BurstItem {
-                path: PathBuf::from("a.jpg"),
-                capture_time: base,
-            },
-            BurstItem {
-                path: PathBuf::from("b.jpg"),
-                capture_time: base + Duration::milliseconds(100),
-            },
-            BurstItem {
-                path: PathBuf::from("c.jpg"),
-                capture_time: base + Duration::seconds(10),
-            },
+            item("a.jpg", base),
+            item("b.jpg", base + Duration::milliseconds(100)),
+            item("c.jpg", base + Duration::seconds(10)),
         ];
         let groups = group_bursts(items, DEFAULT_GAP_THRESHOLD);
         assert_eq!(groups.len(), 2);

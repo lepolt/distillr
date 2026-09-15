@@ -2,3 +2,6 @@
 name = "cw-scan"
 version.workspace = true
 edition.workspace = true
+
+[dependencies]
+cw-metadata = { path = "../cw-metadata" }

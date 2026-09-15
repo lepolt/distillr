@@ -130,8 +130,8 @@ impl CullWizardApp {
         self.compare = None;
         self.grid_focus = None;
 
-        let paths = match cw_scan::scan_folder(&folder) {
-            Ok(paths) => paths,
+        let sources = match cw_scan::scan_folder(&folder) {
+            Ok(sources) => sources,
             Err(e) => {
                 self.status = format!("Could not read {}: {e}", folder.display());
                 self.source_folder = Some(folder);
@@ -139,12 +139,13 @@ impl CullWizardApp {
             }
         };
 
-        let mut items = Vec::with_capacity(paths.len());
+        let mut items = Vec::with_capacity(sources.len());
         let mut unreadable = 0usize;
-        for path in paths {
-            match cw_metadata::read_jpeg_metadata(&path) {
+        for source in sources {
+            match cw_metadata::read_metadata(&source.primary) {
                 Ok(meta) => items.push(BurstItem {
-                    path,
+                    path: source.primary,
+                    sidecar: source.sidecar,
                     capture_time: meta.capture_time,
                 }),
                 Err(_) => unreadable += 1,
@@ -433,7 +434,7 @@ impl CullWizardApp {
         if self.loupe_cache.contains_key(path) {
             return;
         }
-        let Ok(image) = image::open(path) else {
+        let Some(image) = decode_display_image(path) else {
             return;
         };
         let large = image.thumbnail(LOUPE_MAX_SIDE, LOUPE_MAX_SIDE).into_rgba8();
@@ -463,12 +464,33 @@ impl CullWizardApp {
         self.paths_matching(|d| d == Decision::Undecided).len()
     }
 
-    fn paths_matching(&self, predicate: impl Fn(Decision) -> bool) -> Vec<PathBuf> {
+    /// (primary, sidecar) pairs for every item whose decision matches.
+    fn items_matching(&self, predicate: impl Fn(Decision) -> bool) -> Vec<(PathBuf, Option<PathBuf>)> {
         self.groups
             .iter()
             .flat_map(|group| group.items.iter())
             .filter(|item| predicate(self.decisions.get(&item.path).copied().unwrap_or_default()))
-            .map(|item| item.path.clone())
+            .map(|item| (item.path.clone(), item.sidecar.clone()))
+            .collect()
+    }
+
+    /// Primary paths only — one per photo, regardless of a RAW sidecar.
+    /// Used for counts/display and anywhere "photo" means one thing to the
+    /// user, not one file.
+    fn paths_matching(&self, predicate: impl Fn(Decision) -> bool) -> Vec<PathBuf> {
+        self.items_matching(predicate)
+            .into_iter()
+            .map(|(primary, _)| primary)
+            .collect()
+    }
+
+    /// Primary path plus RAW sidecar (when present) for every matching
+    /// item — the actual file list Finalize needs so a RAW+JPEG pair moves
+    /// or copies together as a unit, not just its JPEG half.
+    fn files_matching(&self, predicate: impl Fn(Decision) -> bool) -> Vec<PathBuf> {
+        self.items_matching(predicate)
+            .into_iter()
+            .flat_map(|(primary, sidecar)| std::iter::once(primary).chain(sidecar))
             .collect()
     }
 
@@ -484,12 +506,14 @@ impl CullWizardApp {
         let mut messages = Vec::new();
 
         if let Some(dest) = copy_destination {
-            let keepers = self.keeper_paths();
-            let report = cw_actions::copy_paths(&keepers, &dest);
+            let keeper_photos = self.keeper_paths();
+            let keeper_files = self.files_matching(|d| d != Decision::Reject);
+            let report = cw_actions::copy_paths(&keeper_files, &dest);
+            let copied: HashSet<PathBuf> = report.copied.iter().cloned().collect();
+            let copied_photo_count = keeper_photos.iter().filter(|p| copied.contains(*p)).count();
             messages.push(format!(
-                "Copied {} photo{} to {}.",
-                report.copied.len(),
-                plural(report.copied.len()),
+                "Copied {copied_photo_count} photo{} to {}.",
+                plural(copied_photo_count),
                 dest.display()
             ));
             if !report.skipped_existing.is_empty() {
@@ -508,10 +532,13 @@ impl CullWizardApp {
         }
 
         if trash_rejected {
-            let rejected = self.rejected_paths();
-            if !rejected.is_empty() {
-                let report = cw_actions::trash_paths(&rejected);
+            let rejected_photos = self.rejected_paths();
+            let rejected_files = self.files_matching(|d| d == Decision::Reject);
+            if !rejected_files.is_empty() {
+                let report = cw_actions::trash_paths(&rejected_files);
                 let trashed: HashSet<PathBuf> = report.trashed.into_iter().collect();
+                let trashed_photo_count =
+                    rejected_photos.iter().filter(|p| trashed.contains(*p)).count();
 
                 for group in &mut self.groups {
                     group.items.retain(|item| !trashed.contains(&item.path));
@@ -527,9 +554,8 @@ impl CullWizardApp {
                 }
 
                 messages.push(format!(
-                    "Trashed {} photo{}.",
-                    trashed.len(),
-                    plural(trashed.len())
+                    "Trashed {trashed_photo_count} photo{}.",
+                    plural(trashed_photo_count)
                 ));
                 if !report.failed.is_empty() {
                     messages.push(format!(
@@ -1384,7 +1410,7 @@ fn spawn_thumbnail_loaders(
 }
 
 fn decode_thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
-    let image = image::open(path).ok()?;
+    let image = decode_display_image(path)?;
     let thumb = image
         .thumbnail(THUMBNAIL_MAX_SIDE, THUMBNAIL_MAX_SIDE)
         .into_rgba8();
@@ -1395,6 +1421,41 @@ fn decode_thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::TextureHan
         color_image,
         egui::TextureOptions::default(),
     ))
+}
+
+/// Decodes `path` for display (thumbnail or loupe), dispatching JPEG vs RAW
+/// (RAW goes through `cw_metadata`'s embedded-preview extraction, not a
+/// real demosaic) and applying the file's EXIF orientation so portrait
+/// shots come out right-side up instead of sideways — neither `image::open`
+/// nor `rawler`'s preview extraction does this automatically.
+fn decode_display_image(path: &Path) -> Option<image::DynamicImage> {
+    let image = if cw_metadata::is_raw_extension(path) {
+        cw_metadata::read_raw_preview(path).ok()?
+    } else {
+        image::open(path).ok()?
+    };
+    let orientation = cw_metadata::read_metadata(path)
+        .ok()
+        .and_then(|meta| meta.orientation);
+    Some(apply_orientation(image, orientation))
+}
+
+/// Applies the standard EXIF orientation transform (values 1-8) to an
+/// already-decoded image. 1 (or missing) is a no-op; 6 and 8 (90°
+/// clockwise/counterclockwise) are the common portrait-shot cases and are
+/// verified against real files; 2/4/5/7 (mirrored) are rare in camera
+/// output but handled for completeness.
+fn apply_orientation(image: image::DynamicImage, orientation: Option<u16>) -> image::DynamicImage {
+    match orientation.unwrap_or(1) {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate270().fliph(),
+        8 => image.rotate270(),
+        _ => image,
+    }
 }
 
 impl eframe::App for CullWizardApp {
@@ -1490,10 +1551,10 @@ mod tests {
         app.load_folder(examples_dir(), &ctx);
 
         let sizes: Vec<usize> = app.groups.iter().map(BurstGroup::len).collect();
-        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6]);
+        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10]);
         let total_photos: usize = sizes.iter().sum();
         assert!(app.status.contains(&format!("{total_photos} photos")));
-        assert!(app.status.contains("6 burst groups"));
+        assert!(app.status.contains("10 burst groups"));
 
         wait_for_thumbnails(&mut app, total_photos);
         assert_eq!(app.thumbnails.len(), total_photos);
@@ -1986,6 +2047,105 @@ mod tests {
             std::fs::copy(examples_dir().join(name), dir.join(name)).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn raw_jpeg_pair_loads_as_one_item_with_sidecar() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let dir = disposable_copy_of_examples(&["DSC_3742.JPG", "DSC_3742.NEF"]);
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+
+        app.load_folder(dir.clone(), &ctx);
+
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.groups[0].len(), 1);
+        let item = &app.groups[0].items[0];
+        assert_eq!(item.path.file_name().unwrap(), "DSC_3742.JPG");
+        assert_eq!(
+            item.sidecar.as_ref().and_then(|p| p.file_name()),
+            Some(std::ffi::OsStr::new("DSC_3742.NEF"))
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_trashes_raw_jpeg_pair_together() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let dir = disposable_copy_of_examples(&["DSC_3742.JPG", "DSC_3742.NEF"]);
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+
+        app.load_folder(dir.clone(), &ctx);
+        let jpg_path = app.groups[0].items[0].path.clone();
+        let nef_path = app.groups[0].items[0].sidecar.clone().unwrap();
+        app.decisions.insert(jpg_path.clone(), Decision::Reject);
+
+        app.run_finalize(true, None);
+
+        assert!(!jpg_path.exists(), "JPEG half should be trashed");
+        assert!(!nef_path.exists(), "RAW half should be trashed together with it");
+        assert_eq!(app.commit_status.as_deref(), Some("Trashed 1 photo."));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn finalize_copies_raw_jpeg_pair_together() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let dir = disposable_copy_of_examples(&["DSC_3742.JPG", "DSC_3742.NEF"]);
+        let dest = std::env::temp_dir().join(format!(
+            "cw-app-finalize-raw-pair-dest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+
+        app.load_folder(dir.clone(), &ctx);
+        // Left Undecided on purpose — "keeper" means "not rejected", and
+        // that should still pull the RAW sidecar along.
+
+        app.run_finalize(false, Some(dest.clone()));
+
+        assert!(dest.join("DSC_3742.JPG").exists());
+        assert!(dest.join("DSC_3742.NEF").exists());
+        assert_eq!(
+            app.commit_status.as_deref(),
+            Some(format!("Copied 1 photo to {}.", dest.display())).as_deref()
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&dest).ok();
+    }
+
+    #[test]
+    fn decode_display_image_rotates_portrait_jpegs_upright_both_directions() {
+        let landscape = decode_display_image(&examples_dir().join("DSC_3676.JPG")).unwrap();
+        assert!(landscape.width() > landscape.height());
+
+        let rotated_90 = decode_display_image(&examples_dir().join("DSC_3751.JPG")).unwrap();
+        assert!(
+            rotated_90.width() < rotated_90.height(),
+            "orientation 6 (Rotate 90 CW) should come out portrait"
+        );
+
+        let rotated_270 = decode_display_image(&examples_dir().join("DSC_3766.JPG")).unwrap();
+        assert!(
+            rotated_270.width() < rotated_270.height(),
+            "orientation 8 (Rotate 270 CW) should come out portrait"
+        );
+    }
+
+    #[test]
+    fn decode_display_image_dispatches_raw_files() {
+        let image = decode_display_image(&examples_dir().join("DSC_3742.NEF")).unwrap();
+        assert!(image.width() >= 6000);
+        assert!(image.height() >= 4000);
     }
 
     #[test]
