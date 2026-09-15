@@ -260,11 +260,29 @@ impl CullWizardApp {
         let Some(group) = self.groups.get(group_index) else {
             return Vec::new();
         };
-        (start_index..group.items.len())
+        let mut indices: Vec<usize> = (start_index..group.items.len())
             .filter(|&i| self.is_active(group, i))
             .take(count)
-            .map(|i| group.items[i].path.clone())
-            .collect()
+            .collect();
+
+        // Not enough active photos forward of start_index to fill `count`
+        // (e.g. starting near the end of a short burst) — backfill with the
+        // nearest active photos before it, so a burst with exactly `count`
+        // active photos always shows all of them regardless of which one
+        // you started on.
+        if indices.len() < count {
+            let missing = count - indices.len();
+            let mut backward: Vec<usize> = (0..start_index)
+                .rev()
+                .filter(|&i| self.is_active(group, i))
+                .take(missing)
+                .collect();
+            backward.reverse();
+            backward.extend(indices);
+            indices = backward;
+        }
+
+        indices.into_iter().map(|i| group.items[i].path.clone()).collect()
     }
 
     /// Up to `needed` active photos in `group_index` not already occupying
@@ -1587,7 +1605,13 @@ mod tests {
     }
 
     fn wait_for_thumbnails(app: &mut CullWizardApp, total: usize) {
-        let deadline = Instant::now() + Duration::from_secs(60);
+        // Generous: `cargo test` at the workspace root runs multiple
+        // crates' test binaries in parallel, and unoptimized debug-mode
+        // decode of 100+ real photos can occasionally get starved past a
+        // tighter deadline under that cross-crate contention even though
+        // this crate's own heavy tests are already serialized via
+        // PIPELINE_TEST_LOCK below.
+        let deadline = Instant::now() + Duration::from_secs(180);
         while app.thumbnails.len() < total && Instant::now() < deadline {
             app.drain_ready_thumbnails();
             std::thread::sleep(Duration::from_millis(20));
@@ -1676,6 +1700,47 @@ mod tests {
 
         assert_eq!(app.review.as_ref().unwrap().item_index, 5);
         assert_eq!(app.current_review_path(), Some(expected_path));
+    }
+
+    #[test]
+    fn active_paths_from_backfills_when_starting_near_the_end_of_a_short_burst() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let dir = disposable_copy_of_examples(&[
+            "DSC_3719.JPG",
+            "DSC_3720.JPG",
+            "DSC_3721.JPG",
+            "DSC_3722.JPG",
+        ]);
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(dir.clone(), &ctx);
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.groups[0].len(), 4);
+
+        // Double-clicking the 3rd of 4 photos then pressing "4" should show
+        // all 4 photos, not just this one and the one after it.
+        let seed = app.active_paths_from(0, 2, 4);
+
+        let expected: Vec<PathBuf> = app.groups[0].items.iter().map(|i| i.path.clone()).collect();
+        assert_eq!(seed, expected);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn active_paths_from_still_prefers_forward_when_enough_photos_are_ahead() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let path_at = |app: &CullWizardApp, i: usize| app.groups[0].items[i].path.clone();
+
+        let seed = app.active_paths_from(0, 0, 3);
+
+        assert_eq!(
+            seed,
+            vec![path_at(&app, 0), path_at(&app, 1), path_at(&app, 2)]
+        );
     }
 
     #[test]
