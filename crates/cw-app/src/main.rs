@@ -239,6 +239,20 @@ impl CullWizardApp {
         }
     }
 
+    /// Moves Review to the first active item of the next (`delta` = 1) or
+    /// previous (`delta` = -1) burst group. Clamped at the ends — no
+    /// wraparound — and a no-op when not currently in Review.
+    fn review_move_burst(&mut self, delta: isize) {
+        let Some(group_index) = self.review.as_ref().map(|r| r.group_index) else {
+            return;
+        };
+        let target = group_index as isize + delta;
+        if target < 0 || target as usize >= self.groups.len() {
+            return;
+        }
+        self.enter_review(target as usize, 0);
+    }
+
     /// Up to `count` active photos in `group_index`, starting at
     /// `start_index` and scanning forward — used to seed Compare mode from
     /// within single-photo Review (current photo + the next few).
@@ -341,6 +355,25 @@ impl CullWizardApp {
         let row_stride = if len > 3 { 2 } else { len };
         let delta = delta_col + delta_row * row_stride;
         compare.focused = (compare.focused as isize + delta).rem_euclid(len) as usize;
+    }
+
+    /// Moves Compare to the next (`delta` = 1) or previous (`delta` = -1)
+    /// burst group, keeping the same panel count and re-seeding from that
+    /// group's first active photos. Clamped at the ends — no wraparound —
+    /// and a no-op when not currently in Compare.
+    fn compare_move_burst(&mut self, delta: isize) {
+        let Some((group_index, panel_count)) =
+            self.compare.as_ref().map(|c| (c.group_index, c.slots.len()))
+        else {
+            return;
+        };
+        let target = group_index as isize + delta;
+        if target < 0 || target as usize >= self.groups.len() {
+            return;
+        }
+        let target = target as usize;
+        let seed = self.active_paths_from(target, 0, panel_count);
+        self.enter_compare(target, seed);
     }
 
     /// Records `decision` for whichever photo is in the focused panel, then
@@ -891,33 +924,38 @@ impl CullWizardApp {
                     }
                 });
 
-                ui.horizontal_wrapped(|ui| {
-                    for (slot, (item_index, item)) in active.iter().enumerate() {
-                        let is_focused = self
-                            .grid_focus
-                            .as_ref()
-                            .is_some_and(|f| f.group_index == group_index && f.active_index == slot);
-                        let response = self.render_thumb(ui, &item.path, 120.0, is_focused);
-                        if response.double_clicked() {
-                            // Double-click any photo in the main filmstrip
-                            // to jump straight into review, starting there.
-                            review_requested = Some((group_index, *item_index));
-                        } else if response.clicked() {
-                            if select_click {
-                                // Cmd/Ctrl-click toggles multi-select, used
-                                // to seed Compare mode.
-                                toggle_selection = Some(item.path.clone());
-                            } else {
-                                // A plain click moves the keyboard cursor
-                                // here too, like clicking an icon in Finder.
-                                clicked_focus = Some(GridFocus {
-                                    group_index,
-                                    active_index: slot,
+                egui::ScrollArea::horizontal()
+                    .id_salt(("active-filmstrip", group_index))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (slot, (item_index, item)) in active.iter().enumerate() {
+                                let is_focused = self.grid_focus.as_ref().is_some_and(|f| {
+                                    f.group_index == group_index && f.active_index == slot
                                 });
+                                let response = self.render_thumb(ui, &item.path, 120.0, is_focused);
+                                if response.double_clicked() {
+                                    // Double-click any photo in the main
+                                    // filmstrip to jump straight into
+                                    // review, starting there.
+                                    review_requested = Some((group_index, *item_index));
+                                } else if response.clicked() {
+                                    if select_click {
+                                        // Cmd/Ctrl-click toggles multi-select,
+                                        // used to seed Compare mode.
+                                        toggle_selection = Some(item.path.clone());
+                                    } else {
+                                        // A plain click moves the keyboard
+                                        // cursor here too, like clicking an
+                                        // icon in Finder.
+                                        clicked_focus = Some(GridFocus {
+                                            group_index,
+                                            active_index: slot,
+                                        });
+                                    }
+                                }
                             }
-                        }
-                    }
-                });
+                        });
+                    });
 
                 if !rejected.is_empty() {
                     ui.add_space(4.0);
@@ -925,18 +963,23 @@ impl CullWizardApp {
                         .id_salt(("rejected-group", group_index))
                         .default_open(false)
                         .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                for item in &rejected {
-                                    // Double-click a rejected photo to
-                                    // restore it straight back to undecided.
-                                    if self
-                                        .render_thumb(ui, &item.path, 120.0, false)
-                                        .double_clicked()
-                                    {
-                                        restore_requested = Some(item.path.clone());
-                                    }
-                                }
-                            });
+                            egui::ScrollArea::horizontal()
+                                .id_salt(("rejected-filmstrip", group_index))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        for item in &rejected {
+                                            // Double-click a rejected photo
+                                            // to restore it straight back to
+                                            // undecided.
+                                            if self
+                                                .render_thumb(ui, &item.path, 120.0, false)
+                                                .double_clicked()
+                                            {
+                                                restore_requested = Some(item.path.clone());
+                                            }
+                                        }
+                                    });
+                                });
                         });
                 }
 
@@ -1051,6 +1094,7 @@ impl CullWizardApp {
         let mut escape_pressed = false;
         let mut collapse_to_single = false;
         let mut resize_to: Option<usize> = None;
+        let mut burst_delta: isize = 0;
 
         ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowRight) {
@@ -1089,6 +1133,9 @@ impl CullWizardApp {
             if i.key_pressed(egui::Key::Num4) {
                 resize_to = Some(4);
             }
+            if i.key_pressed(egui::Key::Tab) {
+                burst_delta = if i.modifiers.shift { -1 } else { 1 };
+            }
         });
 
         let Some(compare) = self.compare.as_ref() else {
@@ -1098,6 +1145,11 @@ impl CullWizardApp {
 
         if escape_pressed {
             self.compare = None;
+            return;
+        }
+
+        if burst_delta != 0 {
+            self.compare_move_burst(burst_delta);
             return;
         }
 
@@ -1162,7 +1214,7 @@ impl CullWizardApp {
         });
         ui.add_space(4.0);
         ui.label(
-            "Arrows: focus panel   K: keep   X: reject   U: undo   1: single view   2/3/4: panel count   Esc: back to grid",
+            "Arrows: focus panel   K: keep   X: reject   U: undo   1: single view   2/3/4: panel count   Tab/Shift+Tab: next/prev burst   Esc: back to grid",
         );
         ui.add_space(6.0);
 
@@ -1217,6 +1269,7 @@ impl CullWizardApp {
         let mut decision_to_set: Option<Decision> = None;
         let mut exit = false;
         let mut expand_to_compare: Option<usize> = None;
+        let mut burst_delta: isize = 0;
 
         ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowRight) {
@@ -1245,6 +1298,9 @@ impl CullWizardApp {
             }
             if i.key_pressed(egui::Key::Num4) {
                 expand_to_compare = Some(4);
+            }
+            if i.key_pressed(egui::Key::Tab) {
+                burst_delta = if i.modifiers.shift { -1 } else { 1 };
             }
         });
 
@@ -1283,6 +1339,11 @@ impl CullWizardApp {
         if let Some(count) = expand_to_compare {
             let seed = self.active_paths_from(group_index, item_index, count);
             self.enter_compare(group_index, seed);
+            return;
+        }
+
+        if burst_delta != 0 {
+            self.review_move_burst(burst_delta);
             return;
         }
 
@@ -1332,7 +1393,7 @@ impl CullWizardApp {
 
         ui.add_space(8.0);
         ui.label(
-            "Left/Right: navigate   K: keep   X: reject   U: undo   2/3/4: compare   Esc: back to grid",
+            "Left/Right: navigate   K: keep   X: reject   U: undo   2/3/4: compare   Tab/Shift+Tab: next/prev burst   Esc: back to grid",
         );
         ui.separator();
 
@@ -1615,6 +1676,91 @@ mod tests {
 
         assert_eq!(app.review.as_ref().unwrap().item_index, 5);
         assert_eq!(app.current_review_path(), Some(expected_path));
+    }
+
+    #[test]
+    fn review_move_burst_moves_to_next_and_previous_group() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        app.enter_review(0, 0);
+
+        app.review_move_burst(1);
+        assert_eq!(app.review.as_ref().unwrap().group_index, 1);
+
+        app.review_move_burst(-1);
+        assert_eq!(app.review.as_ref().unwrap().group_index, 0);
+    }
+
+    #[test]
+    fn review_move_burst_clamps_at_bounds() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let last_group = app.groups.len() - 1;
+
+        app.enter_review(0, 0);
+        app.review_move_burst(-1);
+        assert_eq!(app.review.as_ref().unwrap().group_index, 0);
+
+        app.enter_review(last_group, 0);
+        app.review_move_burst(1);
+        assert_eq!(app.review.as_ref().unwrap().group_index, last_group);
+    }
+
+    #[test]
+    fn review_move_burst_is_a_noop_when_not_reviewing() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+
+        app.review_move_burst(1);
+
+        assert!(app.review.is_none());
+    }
+
+    #[test]
+    fn compare_move_burst_preserves_panel_count_and_reseeds() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let path_at = |app: &CullWizardApp, group: usize, i: usize| app.groups[group].items[i].path.clone();
+        app.enter_compare(
+            0,
+            vec![path_at(&app, 0, 0), path_at(&app, 0, 1), path_at(&app, 0, 2)],
+        );
+
+        app.compare_move_burst(1);
+
+        let compare = app.compare.as_ref().unwrap();
+        assert_eq!(compare.group_index, 1);
+        assert_eq!(
+            compare.slots,
+            vec![
+                Some(path_at(&app, 1, 0)),
+                Some(path_at(&app, 1, 1)),
+                Some(path_at(&app, 1, 2)),
+            ],
+            "panel count should stay 3, reseeded from the new group"
+        );
+    }
+
+    #[test]
+    fn compare_move_burst_clamps_at_bounds() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let path_at = |app: &CullWizardApp, i: usize| app.groups[0].items[i].path.clone();
+        app.enter_compare(0, vec![path_at(&app, 0), path_at(&app, 1)]);
+
+        app.compare_move_burst(-1);
+
+        assert_eq!(app.compare.as_ref().unwrap().group_index, 0);
     }
 
     #[test]
