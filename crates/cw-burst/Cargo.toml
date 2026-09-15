@@ -1,0 +1,11 @@
+[package]
+name = "cw-burst"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+time = "0.3"
+
+[dev-dependencies]
+cw-metadata = { path = "../cw-metadata" }
+cw-scan = { path = "../cw-scan" }

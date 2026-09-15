@@ -1,0 +1,7 @@
+[package]
+name = "cw-actions"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+trash = "5"

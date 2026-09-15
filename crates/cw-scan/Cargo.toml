@@ -1,0 +1,4 @@
+[package]
+name = "cw-scan"
+version.workspace = true
+edition.workspace = true

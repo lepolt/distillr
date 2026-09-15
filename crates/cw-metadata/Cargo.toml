@@ -1,0 +1,8 @@
+[package]
+name = "cw-metadata"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+kamadak-exif = "0.6"
+time = "0.3"

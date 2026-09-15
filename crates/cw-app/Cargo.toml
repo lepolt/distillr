@@ -1,0 +1,18 @@
+[package]
+name = "cw-app"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "cull-wizard"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.36"
+egui = "0.36"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+rfd = "0.15"
+cw-scan = { path = "../cw-scan" }
+cw-metadata = { path = "../cw-metadata" }
+cw-burst = { path = "../cw-burst" }
+cw-actions = { path = "../cw-actions" }
