@@ -11,8 +11,11 @@ codebase, no webview, native windows on macOS and Windows.
 
 - **Formats:** JPEG only for now. RAW support (CR2/CR3, NEF, ARW, …) is
   planned but not implemented.
-- **Sources:** local folders only. Reading directly from a mounted SD
-  card/camera volume is planned but not implemented.
+- **Sources:** any folder the OS gives you a path to — including a
+  mounted SD card/camera volume (e.g. `/Volumes/NIKON/DCIM/100NIKON` on
+  macOS). Scanning isn't recursive, so point **Choose folder…** at the
+  folder that directly contains the JPEGs, not a parent folder with
+  subfolders.
 - **Platforms:** actively developed and tested on macOS. Builds against the
   same cross-platform stack on Windows, but hasn't been validated there yet.
 

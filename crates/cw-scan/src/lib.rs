@@ -1,6 +1,8 @@
-//! Folder/volume walking and source abstraction (folder vs SD card).
-//!
-//! Local-folder scanning only for now; SD card/volume sources come later.
+//! Folder walking. Works on any path the OS resolves, including a mounted
+//! SD card/camera volume — a removable volume looks like any other folder
+//! to `std::fs`, so no special-casing is needed. Scanning is flat (not
+//! recursive), so the caller needs to point at the folder that directly
+//! contains the photos.
 
 use std::io;
 use std::path::{Path, PathBuf};
