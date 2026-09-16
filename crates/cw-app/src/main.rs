@@ -90,6 +90,7 @@ struct CullWizardApp {
     groups: Vec<BurstGroup>,
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
     thumbnails_total: usize,
+    unreadable_count: usize,
     status: String,
     thumbnail_rx: Option<Receiver<(PathBuf, egui::TextureHandle)>>,
     decisions: HashMap<PathBuf, Decision>,
@@ -139,6 +140,12 @@ impl CullWizardApp {
             }
         };
 
+        // Metadata is a cheap EXIF-header read, so grouping by capture time
+        // can happen synchronously and show the grid immediately — full
+        // image decode (thumbnails) happens in the background afterward.
+        // Bursts group by capture-time proximity only; if continuous
+        // shooting merges unrelated moments together, split the group
+        // manually from Review (see `split_group_before`).
         let mut items = Vec::with_capacity(sources.len());
         let mut unreadable = 0usize;
         for source in sources {
@@ -152,7 +159,6 @@ impl CullWizardApp {
             }
         }
 
-        let photo_count = items.len();
         self.groups = cw_burst::group_bursts(items, cw_burst::DEFAULT_GAP_THRESHOLD);
 
         let paths_to_load: Vec<PathBuf> = self
@@ -163,16 +169,25 @@ impl CullWizardApp {
         self.thumbnails_total = paths_to_load.len();
         self.thumbnail_rx = Some(spawn_thumbnail_loaders(ctx.clone(), paths_to_load));
 
+        self.unreadable_count = unreadable;
+        self.refresh_status();
+        self.source_folder = Some(folder);
+    }
+
+    /// Recomputes the "N photos in M burst groups" status line from current
+    /// counts. Called after the initial load, and again whenever a manual
+    /// split changes the group count, so the text never goes stale.
+    fn refresh_status(&mut self) {
         self.status = format!(
-            "{photo_count} photos in {} burst groups{}",
+            "{} photos in {} burst groups{}",
+            self.thumbnails_total,
             self.groups.len(),
-            if unreadable > 0 {
-                format!(" ({unreadable} could not be read)")
+            if self.unreadable_count > 0 {
+                format!(" ({} could not be read)", self.unreadable_count)
             } else {
                 String::new()
             }
         );
-        self.source_folder = Some(folder);
     }
 
     /// Pulls any thumbnails finished by the background workers since the last
@@ -183,6 +198,60 @@ impl CullWizardApp {
         };
         while let Ok((path, texture)) = rx.try_recv() {
             self.thumbnails.insert(path, texture);
+        }
+    }
+
+    /// Manually splits `group_index` into two groups at `item_index`: the
+    /// items before it stay in place, `item_index` and everything after it
+    /// become a new group immediately following. For continuous-shooting
+    /// bursts where capture-time proximity alone merged unrelated moments
+    /// together (see the module-level docs on `cw_burst::group_bursts`).
+    /// A no-op if `item_index` is 0 (nothing to split off) or out of range.
+    fn split_group_before(&mut self, group_index: usize, item_index: usize) {
+        let Some(group) = self.groups.get(group_index) else {
+            return;
+        };
+        if item_index == 0 || item_index >= group.items.len() {
+            return;
+        }
+        let mut first = group.clone();
+        let second_items = first.items.split_off(item_index);
+        let second = BurstGroup { items: second_items };
+        self.groups.splice(group_index..=group_index, [first, second]);
+        self.refresh_status();
+
+        if let Some(review) = &mut self.review {
+            if review.group_index == group_index && review.item_index >= item_index {
+                review.group_index += 1;
+                review.item_index -= item_index;
+            } else if review.group_index > group_index {
+                review.group_index += 1;
+            }
+        }
+        if let Some(compare) = &self.compare {
+            if compare.group_index == group_index {
+                // Slots may now span both halves — no single group to
+                // point back at, so drop out rather than leave it stale.
+                self.compare = None;
+            }
+        }
+        if let Some(compare) = &mut self.compare {
+            if compare.group_index > group_index {
+                compare.group_index += 1;
+            }
+        }
+        if let Some(focus) = &self.grid_focus {
+            if focus.group_index == group_index {
+                // active_index is into the pre-split active list; simplest
+                // to just drop the cursor than to recompute which half it
+                // now falls in.
+                self.grid_focus = None;
+            }
+        }
+        if let Some(focus) = &mut self.grid_focus {
+            if focus.group_index > group_index {
+                focus.group_index += 1;
+            }
         }
     }
 
@@ -485,7 +554,7 @@ impl CullWizardApp {
         if self.loupe_cache.contains_key(path) {
             return;
         }
-        let Some(image) = decode_display_image(path) else {
+        let Ok(image) = cw_metadata::decode_image(path) else {
             return;
         };
         let large = image.thumbnail(LOUPE_MAX_SIDE, LOUPE_MAX_SIDE).into_rgba8();
@@ -1288,6 +1357,7 @@ impl CullWizardApp {
         let mut exit = false;
         let mut expand_to_compare: Option<usize> = None;
         let mut burst_delta: isize = 0;
+        let mut split_here = false;
 
         ui.input(|i| {
             if i.key_pressed(egui::Key::ArrowRight) {
@@ -1319,6 +1389,9 @@ impl CullWizardApp {
             }
             if i.key_pressed(egui::Key::Tab) {
                 burst_delta = if i.modifiers.shift { -1 } else { 1 };
+            }
+            if i.key_pressed(egui::Key::S) {
+                split_here = true;
             }
         });
 
@@ -1365,6 +1438,11 @@ impl CullWizardApp {
             return;
         }
 
+        if split_here && item_index > 0 {
+            self.split_group_before(group_index, item_index);
+            return;
+        }
+
         let group_paths: Vec<PathBuf> = self.groups[group_index]
             .items
             .iter()
@@ -1383,6 +1461,18 @@ impl CullWizardApp {
                 item_index + 1
             ));
             ui.colored_label(decision.color(), decision.label());
+            ui.add_enabled_ui(item_index > 0, |ui| {
+                if ui
+                    .button("Split burst here (S)")
+                    .on_hover_text(
+                        "This photo and everything after it becomes a new burst — \
+                         use when continuous shooting merged unrelated moments together.",
+                    )
+                    .clicked()
+                {
+                    self.split_group_before(group_index, item_index);
+                }
+            });
         });
 
         if exit {
@@ -1395,7 +1485,7 @@ impl CullWizardApp {
         if let Some(texture) = self.loupe_cache.get(&path) {
             let avail_height = (ui.available_height() - 140.0).max(100.0);
             egui::Frame::new()
-                .stroke(egui::Stroke::new(3.0, self.border_color(&path)))
+                .stroke(egui::Stroke::new(4.0, self.border_color(&path)))
                 .inner_margin(4.0)
                 .show(ui, |ui| {
                     ui.add(
@@ -1411,7 +1501,8 @@ impl CullWizardApp {
 
         ui.add_space(8.0);
         ui.label(
-            "Left/Right: navigate   K: keep   X: reject   U: undo   2/3/4: compare   Tab/Shift+Tab: next/prev burst   Esc: back to grid",
+            "Left/Right: navigate   K: keep   X: reject   U: undo   2/3/4: compare   \
+             Tab/Shift+Tab: next/prev burst   S: split burst here   Esc: back to grid",
         );
         ui.separator();
 
@@ -1432,12 +1523,25 @@ impl CullWizardApp {
                         let Some(thumb) = self.thumbnails.get(item_path) else {
                             continue;
                         };
-                        let stroke_width = if i == item_index { 3.0 } else { 1.0 };
+                        let current_stroke = if i == item_index {
+                            egui::Stroke::new(4.0, ACCENT_COLOR)
+                        } else {
+                            egui::Stroke::NONE
+                        };
                         let inner = egui::Frame::new()
-                            .stroke(egui::Stroke::new(stroke_width, self.border_color(item_path)))
+                            .stroke(current_stroke)
                             .inner_margin(2.0)
                             .show(ui, |ui| {
-                                ui.add(egui::Image::new(thumb).max_width(70.0).max_height(70.0))
+                                egui::Frame::new()
+                                    .stroke(egui::Stroke::new(2.0, self.border_color(item_path)))
+                                    .inner_margin(2.0)
+                                    .show(ui, |ui| {
+                                        ui.add(
+                                            egui::Image::new(thumb)
+                                                .max_width(70.0)
+                                                .max_height(70.0),
+                                        )
+                                    });
                             });
                         if inner.response.interact(egui::Sense::click()).clicked() {
                             jump_to = Some(i);
@@ -1489,7 +1593,7 @@ fn spawn_thumbnail_loaders(
 }
 
 fn decode_thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::TextureHandle> {
-    let image = decode_display_image(path)?;
+    let image = cw_metadata::decode_image(path).ok()?;
     let thumb = image
         .thumbnail(THUMBNAIL_MAX_SIDE, THUMBNAIL_MAX_SIDE)
         .into_rgba8();
@@ -1500,41 +1604,6 @@ fn decode_thumbnail(ctx: &egui::Context, path: &Path) -> Option<egui::TextureHan
         color_image,
         egui::TextureOptions::default(),
     ))
-}
-
-/// Decodes `path` for display (thumbnail or loupe), dispatching JPEG vs RAW
-/// (RAW goes through `cw_metadata`'s embedded-preview extraction, not a
-/// real demosaic) and applying the file's EXIF orientation so portrait
-/// shots come out right-side up instead of sideways — neither `image::open`
-/// nor `rawler`'s preview extraction does this automatically.
-fn decode_display_image(path: &Path) -> Option<image::DynamicImage> {
-    let image = if cw_metadata::is_raw_extension(path) {
-        cw_metadata::read_raw_preview(path).ok()?
-    } else {
-        image::open(path).ok()?
-    };
-    let orientation = cw_metadata::read_metadata(path)
-        .ok()
-        .and_then(|meta| meta.orientation);
-    Some(apply_orientation(image, orientation))
-}
-
-/// Applies the standard EXIF orientation transform (values 1-8) to an
-/// already-decoded image. 1 (or missing) is a no-op; 6 and 8 (90°
-/// clockwise/counterclockwise) are the common portrait-shot cases and are
-/// verified against real files; 2/4/5/7 (mirrored) are rare in camera
-/// output but handled for completeness.
-fn apply_orientation(image: image::DynamicImage, orientation: Option<u16>) -> image::DynamicImage {
-    match orientation.unwrap_or(1) {
-        2 => image.fliph(),
-        3 => image.rotate180(),
-        4 => image.flipv(),
-        5 => image.rotate90().fliph(),
-        6 => image.rotate90(),
-        7 => image.rotate270().fliph(),
-        8 => image.rotate270(),
-        _ => image,
-    }
 }
 
 impl eframe::App for CullWizardApp {
@@ -1579,7 +1648,6 @@ impl eframe::App for CullWizardApp {
                     self.thumbnails_total
                 ));
             }
-
             self.render_finalize_dialog(ui);
 
             ui.separator();
@@ -1635,11 +1703,15 @@ mod tests {
 
         app.load_folder(examples_dir(), &ctx);
 
+        let total_photos = app.thumbnails_total;
         let sizes: Vec<usize> = app.groups.iter().map(BurstGroup::len).collect();
-        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10]);
-        let total_photos: usize = sizes.iter().sum();
+        // DSC_3900/3901 (unrelated shots ~1.2s apart, continuous shooting)
+        // land in one group here — pure time-based grouping merges them;
+        // splitting a mis-grouped burst like this is a manual action from
+        // Review (see `split_group_before`), not automatic.
+        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10, 2]);
         assert!(app.status.contains(&format!("{total_photos} photos")));
-        assert!(app.status.contains("10 burst groups"));
+        assert!(app.status.contains("11 burst groups"));
 
         wait_for_thumbnails(&mut app, total_photos);
         assert_eq!(app.thumbnails.len(), total_photos);
@@ -1878,6 +1950,101 @@ mod tests {
         // Arrowing right again skips 1 and returns to 2.
         app.review_move(1);
         assert_eq!(app.current_review_path(), Some(path_at(&app, 2)));
+    }
+
+    #[test]
+    fn split_group_before_divides_a_group_at_the_given_index() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let group_count_before = app.groups.len();
+        let items_before: Vec<PathBuf> =
+            app.groups[0].items.iter().map(|i| i.path.clone()).collect();
+
+        app.split_group_before(0, 5);
+
+        assert_eq!(app.groups.len(), group_count_before + 1);
+        assert_eq!(app.groups[0].items.len(), 5);
+        assert_eq!(app.groups[1].items.len(), items_before.len() - 5);
+        let rejoined: Vec<PathBuf> = app.groups[0]
+            .items
+            .iter()
+            .chain(app.groups[1].items.iter())
+            .map(|i| i.path.clone())
+            .collect();
+        assert_eq!(rejoined, items_before, "no items lost or reordered");
+        assert!(app.status.contains(&format!("{} burst groups", group_count_before + 1)));
+    }
+
+    #[test]
+    fn split_group_before_is_a_noop_at_the_start_of_a_group() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let group_count_before = app.groups.len();
+
+        app.split_group_before(0, 0);
+
+        assert_eq!(app.groups.len(), group_count_before, "nothing to split off before index 0");
+    }
+
+    #[test]
+    fn split_group_before_moves_review_to_the_new_group_at_the_split_point() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+        let split_path = app.groups[0].items[5].path.clone();
+
+        app.enter_review(0, 5);
+        app.split_group_before(0, 5);
+
+        let review = app.review.as_ref().unwrap();
+        assert_eq!(review.group_index, 1);
+        assert_eq!(review.item_index, 0);
+        assert_eq!(app.groups[1].items[0].path, split_path);
+    }
+
+    #[test]
+    fn split_group_before_shifts_review_state_pointing_at_a_later_group() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(examples_dir(), &ctx);
+
+        app.enter_review(1, 2); // burst 2 (17 photos), some photo mid-way
+        let path_before = app.current_review_path().unwrap();
+
+        app.split_group_before(0, 5); // split the earlier burst 1
+
+        let review = app.review.as_ref().unwrap();
+        assert_eq!(review.group_index, 2, "burst 2 shifted to index 2");
+        assert_eq!(app.current_review_path(), Some(path_before));
+    }
+
+    #[test]
+    fn split_group_before_fixes_the_real_reported_bug_pair() {
+        let _guard = PIPELINE_TEST_LOCK.lock().unwrap();
+        let dir = disposable_copy_of_examples(&["DSC_3900.JPG", "DSC_3901.JPG"]);
+        let ctx = egui::Context::default();
+        let mut app = CullWizardApp::default();
+        app.load_folder(dir.clone(), &ctx);
+
+        // Continuous-shooting pair ~1.2s apart, merged into one time-based
+        // group (the reported bug) — see cw_burst::group_bursts docs.
+        assert_eq!(app.groups.len(), 1);
+        assert_eq!(app.groups[0].items.len(), 2);
+
+        app.split_group_before(0, 1);
+
+        assert_eq!(app.groups.len(), 2);
+        assert_eq!(app.groups[0].items.len(), 1);
+        assert_eq!(app.groups[1].items.len(), 1);
+        assert_ne!(app.groups[0].items[0].path, app.groups[1].items[0].path);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -2336,16 +2503,16 @@ mod tests {
 
     #[test]
     fn decode_display_image_rotates_portrait_jpegs_upright_both_directions() {
-        let landscape = decode_display_image(&examples_dir().join("DSC_3676.JPG")).unwrap();
+        let landscape = cw_metadata::decode_image(&examples_dir().join("DSC_3676.JPG")).unwrap();
         assert!(landscape.width() > landscape.height());
 
-        let rotated_90 = decode_display_image(&examples_dir().join("DSC_3751.JPG")).unwrap();
+        let rotated_90 = cw_metadata::decode_image(&examples_dir().join("DSC_3751.JPG")).unwrap();
         assert!(
             rotated_90.width() < rotated_90.height(),
             "orientation 6 (Rotate 90 CW) should come out portrait"
         );
 
-        let rotated_270 = decode_display_image(&examples_dir().join("DSC_3766.JPG")).unwrap();
+        let rotated_270 = cw_metadata::decode_image(&examples_dir().join("DSC_3766.JPG")).unwrap();
         assert!(
             rotated_270.width() < rotated_270.height(),
             "orientation 8 (Rotate 270 CW) should come out portrait"
@@ -2354,7 +2521,7 @@ mod tests {
 
     #[test]
     fn decode_display_image_dispatches_raw_files() {
-        let image = decode_display_image(&examples_dir().join("DSC_3742.NEF")).unwrap();
+        let image = cw_metadata::decode_image(&examples_dir().join("DSC_3742.NEF")).unwrap();
         assert!(image.width() >= 6000);
         assert!(image.height() >= 4000);
     }

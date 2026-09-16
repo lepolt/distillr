@@ -98,8 +98,9 @@ mod tests {
     #[test]
     fn finds_all_example_photos_sorted_by_primary() {
         let found = scan_folder(&examples_dir()).unwrap();
-        // 91 standalone JPEGs (66 original + 15 + 10 portrait) + 9 RAW+JPEG pairs.
-        assert_eq!(found.len(), 100);
+        // 93 standalone JPEGs (66 original + 15 + 10 portrait + DSC_3900/3901)
+        // + 9 RAW+JPEG pairs.
+        assert_eq!(found.len(), 102);
         assert!(found.windows(2).all(|w| w[0].primary < w[1].primary));
         assert_eq!(file_name(&found[0].primary), "DSC_3676.JPG");
     }

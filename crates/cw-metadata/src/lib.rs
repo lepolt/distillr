@@ -53,6 +53,7 @@ pub enum MetadataError {
     Io(std::io::Error),
     Exif(exif::Error),
     Raw(rawler::RawlerError),
+    Image(image::ImageError),
     MissingCaptureTime,
     InvalidCaptureTime(String),
     NoPreviewAvailable,
@@ -76,12 +77,19 @@ impl From<rawler::RawlerError> for MetadataError {
     }
 }
 
+impl From<image::ImageError> for MetadataError {
+    fn from(e: image::ImageError) -> Self {
+        MetadataError::Image(e)
+    }
+}
+
 impl std::fmt::Display for MetadataError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MetadataError::Io(e) => write!(f, "io error: {e}"),
             MetadataError::Exif(e) => write!(f, "exif error: {e}"),
             MetadataError::Raw(e) => write!(f, "raw decode error: {e}"),
+            MetadataError::Image(e) => write!(f, "image decode error: {e}"),
             MetadataError::MissingCaptureTime => write!(f, "no DateTimeOriginal tag found"),
             MetadataError::InvalidCaptureTime(raw) => {
                 write!(f, "could not parse capture time: {raw:?}")
@@ -161,6 +169,39 @@ pub fn read_raw_preview(path: &Path) -> Result<DynamicImage, MetadataError> {
     decoder
         .full_image(&source, &params)?
         .ok_or(MetadataError::NoPreviewAvailable)
+}
+
+/// Decodes `path` for display (thumbnail or loupe), dispatching JPEG vs RAW
+/// (RAW goes through the embedded-preview extraction above, not a real
+/// demosaic) and applying the file's EXIF orientation so portrait shots
+/// come out right-side up instead of sideways — neither `image::open` nor
+/// `rawler`'s preview extraction does this automatically.
+pub fn decode_image(path: &Path) -> Result<DynamicImage, MetadataError> {
+    let img = if is_raw_extension(path) {
+        read_raw_preview(path)?
+    } else {
+        image::open(path)?
+    };
+    let orientation = read_metadata(path).ok().and_then(|meta| meta.orientation);
+    Ok(apply_orientation(img, orientation))
+}
+
+/// Applies the standard EXIF orientation transform (values 1-8) to an
+/// already-decoded image. 1 (or missing) is a no-op; 6 and 8 (90°
+/// clockwise/counterclockwise) are the common portrait-shot cases and are
+/// verified against real files; 2/4/5/7 (mirrored) are rare in camera
+/// output but handled for completeness.
+pub fn apply_orientation(image: DynamicImage, orientation: Option<u16>) -> DynamicImage {
+    match orientation.unwrap_or(1) {
+        2 => image.fliph(),
+        3 => image.rotate180(),
+        4 => image.flipv(),
+        5 => image.rotate90().fliph(),
+        6 => image.rotate90(),
+        7 => image.rotate270().fliph(),
+        8 => image.rotate270(),
+        _ => image,
+    }
 }
 
 fn ascii_field(exif: &exif::Exif, tag: Tag) -> Option<String> {

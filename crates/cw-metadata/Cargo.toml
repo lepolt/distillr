@@ -7,4 +7,4 @@ edition.workspace = true
 kamadak-exif = "0.6"
 time = "0.3"
 rawler = "0.7"
-image = { version = "0.25", default-features = false }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

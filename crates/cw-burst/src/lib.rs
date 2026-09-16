@@ -1,10 +1,13 @@
-//! Burst-sequence detection: timestamp clustering and perceptual-hash
-//! refinement.
+//! Burst-sequence detection: timestamp clustering.
 //!
-//! Timestamp clustering only for now; perceptual-hash refinement comes
-//! later, once there's a real case that needs it. RAW+JPEG pairing lives
-//! upstream in `cw-scan` (`PhotoSource`) — by the time a photo becomes a
-//! `BurstItem` here, `path` is already the one path that represents it.
+//! Groups photos taken close together in time (`group_bursts`). Continuous
+//! shooting can occasionally merge genuinely unrelated moments into one
+//! group when they land inside the same capture-time gap; splitting one of
+//! those apart is a manual action in the app (`CullWizardApp::
+//! split_group_before`), not automatic — see that function's docs for why.
+//! RAW+JPEG pairing lives upstream in `cw-scan` (`PhotoSource`) — by the
+//! time a photo becomes a `BurstItem` here, `path` is already the one path
+//! that represents it.
 
 use std::path::PathBuf;
 
@@ -95,8 +98,11 @@ mod tests {
 
         let sizes: Vec<usize> = groups.iter().map(BurstGroup::len).collect();
         // Original 6 JPEG bursts, then a 9-shot RAW+JPEG burst
-        // (DSC_3742-3750), then three portrait-JPEG bursts.
-        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10]);
+        // (DSC_3742-3750), then three portrait-JPEG bursts, then the
+        // DSC_3900/3901 pair (unrelated shots ~1.2s apart, correctly one
+        // *time*-based group here — `refine_by_similarity` is what splits
+        // them, tested separately below).
+        assert_eq!(sizes, vec![20, 17, 6, 5, 12, 6, 9, 7, 8, 10, 2]);
 
         assert_eq!(file_name(&groups[0].items[0]), "DSC_3676.JPG");
         assert_eq!(
@@ -126,6 +132,12 @@ mod tests {
         assert_eq!(
             file_name(groups[9].items.last().unwrap()),
             "DSC_3775.JPG"
+        );
+
+        assert_eq!(file_name(&groups[10].items[0]), "DSC_3900.JPG");
+        assert_eq!(
+            file_name(groups[10].items.last().unwrap()),
+            "DSC_3901.JPG"
         );
     }
 

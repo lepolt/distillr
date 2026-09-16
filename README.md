@@ -2,7 +2,10 @@
 
 A native desktop tool for culling burst-shot photos fast: point it at a
 folder, it groups near-identical burst sequences by capture timestamp, and
-you review each group and pick the keepers with a few keystrokes.
+you review each group and pick the keepers with a few keystrokes. Fast,
+continuous shooting can occasionally merge unrelated moments into one group
+when they land close enough together in time — if that happens, **S** in
+Review splits the burst at the current photo.
 
 Built with [egui](https://github.com/emilk/egui)/`eframe` — one Rust
 codebase, no webview, native windows on macOS and Windows.
@@ -79,6 +82,11 @@ This launches the `distillr` binary (from the `cw-app` crate). Click
    - `←` / `→` — navigate between photos in the burst
    - `K` — keep, `X` — reject, `U` — clear the decision
    - `2` / `3` / `4` — expand into a multi-photo compare view
+   - `Tab` / `Shift+Tab` — jump to the next/previous burst
+   - `S` — split the burst here: the current photo and everything after it
+     becomes a new burst. Use this if continuous shooting merged unrelated
+     moments into one group (grouping is by capture-time proximity only —
+     it can't tell a scene change from a fast shutter finger).
    - `Esc` — back to the grid
 3. **Compare mode** — review 2-4 photos side by side (2/3 in a row, 4 in a
    2×2 grid). Click a panel or use the arrow keys to change focus; `K`/`X`/
