@@ -1,5 +1,7 @@
 # Build artifacts
 /target/
+/macos/.build/
+/macos/.swiftpm/
 
 # macOS
 .DS_Store
