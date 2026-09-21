@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Distillr
+@testable import Core
 
 @MainActor
 struct AppModelTests {
@@ -406,7 +406,25 @@ struct AppModelTests {
         #expect(model.compare?.focused == 0, "focus stays on the refilled slot")
     }
 
-    @Test func decidingPanelWithNoReplacementAvailableLeavesItEmpty() async {
+    @Test func decidingPanelWithNoReplacementShrinksPanelCountByOne() async {
+        let dir = disposableCopyOfExamples(["DSC_3684.JPG", "DSC_3685.JPG", "DSC_3686.JPG"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let model = AppModel()
+        model.loadFolder(dir)
+        await waitForThumbnails(model, total: 3)
+        #expect(model.groups.count == 1, "fixture precondition: all three group together")
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        let (p0, p1, p2) = (pathAt(0), pathAt(1), pathAt(2))
+        model.enterCompare(groupIndex: 0, paths: [p0, p1, p2])
+
+        model.decideFocusedComparePanel(.reject)
+
+        #expect(model.decisions[p0] == .reject)
+        #expect(model.compare?.slots == [p1, p2], "panel count drops by one instead of leaving a dead empty slot")
+        #expect(model.compare?.focused == 0)
+    }
+
+    @Test func decidingPanelWithNoReplacementFallsBackToReviewWhenOnePanelWouldRemain() async {
         let dir = disposableCopyOfExamples(["DSC_3684.JPG", "DSC_3685.JPG"])
         defer { try? FileManager.default.removeItem(at: dir) }
         let model = AppModel()
@@ -418,11 +436,13 @@ struct AppModelTests {
 
         model.decideFocusedComparePanel(.reject)
 
-        #expect(model.compare?.slots == [nil, p1])
-        #expect(!model.compareGroupExhausted(), "one panel still has a photo")
+        #expect(model.decisions[p0] == .reject)
+        #expect(model.compare == nil, "down to a single remaining photo isn't really comparing anymore")
+        #expect(model.review?.groupIndex == 0)
+        #expect(model.currentReviewPath() == p1)
     }
 
-    @Test func compareModeExitsWhenEveryPanelIsEmpty() async {
+    @Test func decidingPanelWithNoReplacementAndNoneRemainingExitsCompare() async {
         let dir = disposableCopyOfExamples(["DSC_3686.JPG"])
         defer { try? FileManager.default.removeItem(at: dir) }
         let model = AppModel()
@@ -433,7 +453,9 @@ struct AppModelTests {
 
         model.decideFocusedComparePanel(.reject)
 
-        #expect(model.compareGroupExhausted())
+        #expect(model.decisions[onlyPath] == .reject)
+        #expect(model.compare == nil, "nothing left at all to compare or review")
+        #expect(model.review == nil)
     }
 
     @Test func resizeCompareGrowsWithFreshPhotosInOrder() {

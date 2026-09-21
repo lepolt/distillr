@@ -1,5 +1,5 @@
 import Testing
-@testable import Distillr
+@testable import Core
 
 struct ThumbnailLoaderTests {
     @Test func extractsRAWEmbeddedPreviewAtFullResolution() throws {

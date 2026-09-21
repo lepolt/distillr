@@ -20,8 +20,30 @@ struct CompareView: View {
     private func content(compare: CompareState) -> some View {
         VStack(spacing: 8) {
             HStack {
+                Text("Burst \(compare.groupIndex + 1) — comparing \(compare.slots.count)")
+                Spacer()
+            }
+
+            HStack {
+                Spacer()
+                ZoomSliderRow(controller: zoom)
+                Spacer()
+            }
+
+            ComparePanelGrid(model: model, compare: compare, zoom: zoom)
+
+            // Mouse-clickable equivalents of the keyboard shortcuts, for
+            // discoverability — all apply to the currently focused panel
+            // (the one with the blue ring), same as their keyboard
+            // counterparts in `shortcuts` below. A shared row under the
+            // whole block rather than one per panel — with up to 4 panels
+            // already dense, repeating a 4-button row that many times
+            // would be more clutter than it's worth, and clicking a panel
+            // to focus it before deciding is already a single click.
+            HStack(spacing: 12) {
+                Spacer()
                 Button(model.review != nil ? "Back to review (Esc)" : "Back to grid (Esc)") {
-                    model.compare = nil
+                    model.exitCompare()
                 }
                 // Attached directly to this visible button rather than an
                 // invisible ShortcutButton (unlike every other Compare
@@ -37,76 +59,8 @@ struct CompareView: View {
                 // risk of the stale-label-closure bug that motivated moving
                 // it off this button in the first place.
                 .keyboardShortcut(.escape, modifiers: [])
-                Text("Burst \(compare.groupIndex + 1) — comparing \(compare.slots.count)")
-                Spacer()
-            }
-            .buttonStyle(.glass)
-
-            HStack {
-                Spacer()
-                ZoomSliderRow(controller: zoom)
-                Spacer()
-            }
-
-            // Zoom/pan gestures live once on this whole area (not per-panel
-            // — see the doc comment on `ZoomPanController.magnifyGesture`),
-            // so pinching or dragging anywhere over the panels, including
-            // the gaps between them, affects all of them together.
-            Group {
-                if compare.slots.count > 3 {
-                    // Two HStacks in a VStack, not a LazyVGrid: a LazyVGrid
-                    // outside a ScrollView sizes each row to its content's
-                    // *ideal* height, and every panel asks for
-                    // `.frame(maxHeight: .infinity)` — an unbounded
-                    // request with no well-defined ideal — so the grid
-                    // couldn't correctly compute or bound its row heights,
-                    // which is what was clipping the bottom row. A plain
-                    // HStack (used for the 2/3-panel case below, which
-                    // never had this problem) correctly propagates a
-                    // flexible child's size request up to itself, and
-                    // VStack divides available height evenly between two
-                    // of them the same way HStack divides width.
-                    // Shaped to the burst's own photo aspect ratio (see
-                    // `representativeAspectRatio`) rather than a plain
-                    // square 2x2 — a landscape photo in a squarish cell
-                    // otherwise gets letterboxed (blank margins left/right
-                    // to preserve the whole photo), which is what the
-                    // "gap" between panels actually was. Sizing the whole
-                    // block to the photo's own ratio first means each cell
-                    // ends up matching it almost exactly once divided,
-                    // with any leftover space centered around the block
-                    // instead of between individual photos.
-                    VStack(spacing: 4) {
-                        HStack(spacing: 4) {
-                            panel(index: 0, compare: compare)
-                            panel(index: 1, compare: compare)
-                        }
-                        HStack(spacing: 4) {
-                            panel(index: 2, compare: compare)
-                            panel(index: 3, compare: compare)
-                        }
-                    }
-                    .aspectRatio(representativeAspectRatio(compare), contentMode: .fit)
-                } else {
-                    HStack(spacing: 4) {
-                        ForEach(compare.slots.indices, id: \.self) { panel(index: $0, compare: compare) }
-                    }
-                    .aspectRatio(CGFloat(compare.slots.count) * representativeAspectRatio(compare), contentMode: .fit)
-                }
-            }
-            .simultaneousGesture(zoom.magnifyGesture)
-
-            // Mouse-clickable equivalents of the keyboard shortcuts, for
-            // discoverability — all apply to the currently focused panel
-            // (the one with the blue ring), same as their keyboard
-            // counterparts in `shortcuts` below. A shared row under the
-            // whole block rather than one per panel — with up to 4 panels
-            // already dense, repeating a 4-button row that many times
-            // would be more clutter than it's worth, and clicking a panel
-            // to focus it before deciding is already a single click.
-            HStack(spacing: 12) {
-                Spacer()
                 Button("Keep (K)") { model.decideFocusedComparePanel(.keep) }
+                    .padding(.leading, 20)
                 Button("Reject (X)") { model.decideFocusedComparePanel(.reject) }
                 Button("Undo (U)") { model.decideFocusedComparePanel(.undecided) }
                 Button("Single view (1)") { collapseToSingleView() }
@@ -127,15 +81,12 @@ struct CompareView: View {
                 .foregroundStyle(.secondary)
         }
         .padding()
-        .onChange(of: model.compareGroupExhausted()) { _, exhausted in
-            if exhausted { model.compare = nil }
-        }
         .onChange(of: compare.groupIndex) { _, _ in
             zoom.reset()
         }
         .background(shortcuts)
-        .onAppear { zoom.installScrollPanMonitor() }
-        .onDisappear { zoom.removeScrollPanMonitor() }
+        .onAppear { zoom.installGestureMonitors() }
+        .onDisappear { zoom.removeGestureMonitors() }
     }
 
     /// Every action reads current state from `model.compare` at call time
@@ -160,12 +111,75 @@ struct CompareView: View {
         model.enterReview(groupIndex: compare.groupIndex, itemIndex: itemIndex)
     }
 
+}
+
+/// Isolated from `CompareView`'s main body so pinching only re-renders the
+/// panel grid — not the header, zoom-slider row, action button row, or
+/// hint text too. When this all lived inline in `CompareView.content`,
+/// reading `zoom.zoomScale`/`zoom.panOffset` here made the *whole* body a
+/// dependent of them, so a pinch (driving those at up to ~120Hz)
+/// re-evaluated everything else in the screen right along with it —
+/// including, notably, the "Reset Zoom" button over in `ZoomSliderRow`,
+/// whose underlying AppKit control being rebuilt that rapidly is what was
+/// leaving it (and the slider) intermittently unresponsive to clicks
+/// immediately after a pinch ended. Same fix applied in ReviewView for the
+/// same reason.
+private struct ComparePanelGrid: View {
+    var model: AppModel
+    let compare: CompareState
+    var zoom: ZoomPanController
+
+    var body: some View {
+        Group {
+            if compare.slots.count > 3 {
+                // Two HStacks in a VStack, not a LazyVGrid: a LazyVGrid
+                // outside a ScrollView sizes each row to its content's
+                // *ideal* height, and every panel asks for
+                // `.frame(maxHeight: .infinity)` — an unbounded request
+                // with no well-defined ideal — so the grid couldn't
+                // correctly compute or bound its row heights, which is
+                // what was clipping the bottom row. A plain HStack (used
+                // for the 2/3-panel case below, which never had this
+                // problem) correctly propagates a flexible child's size
+                // request up to itself, and VStack divides available
+                // height evenly between two of them the same way HStack
+                // divides width. Shaped to the burst's own photo aspect
+                // ratio (see `representativeAspectRatio`) rather than a
+                // plain square 2x2 — a landscape photo in a squarish cell
+                // otherwise gets letterboxed (blank margins left/right to
+                // preserve the whole photo), which is what the "gap"
+                // between panels actually was. Sizing the whole block to
+                // the photo's own ratio first means each cell ends up
+                // matching it almost exactly once divided, with any
+                // leftover space centered around the block instead of
+                // between individual photos.
+                VStack(spacing: 4) {
+                    HStack(spacing: 4) {
+                        panel(index: 0)
+                        panel(index: 1)
+                    }
+                    HStack(spacing: 4) {
+                        panel(index: 2)
+                        panel(index: 3)
+                    }
+                }
+                .aspectRatio(representativeAspectRatio(), contentMode: .fit)
+            } else {
+                HStack(spacing: 4) {
+                    ForEach(compare.slots.indices, id: \.self) { panel(index: $0) }
+                }
+                .aspectRatio(CGFloat(compare.slots.count) * representativeAspectRatio(), contentMode: .fit)
+            }
+        }
+        .onHover { zoom.isHovering = $0 }
+    }
+
     /// Width/height of whichever visible slot has an image loaded yet,
     /// falling back to a plain 3:2 if none do (briefly possible right as
     /// Compare opens, before even the thumbnail has decoded). Bursts are
     /// effectively always one consistent camera orientation, so any loaded
     /// photo is a fine stand-in for shaping the whole panel block.
-    private func representativeAspectRatio(_ compare: CompareState) -> CGFloat {
+    private func representativeAspectRatio() -> CGFloat {
         for slot in compare.slots {
             guard let path = slot, let image = model.loupeCache[path] ?? model.thumbnails[path] else { continue }
             if image.height > 0 { return CGFloat(image.width) / CGFloat(image.height) }
@@ -174,7 +188,7 @@ struct CompareView: View {
     }
 
     @ViewBuilder
-    private func panel(index: Int, compare: CompareState) -> some View {
+    private func panel(index: Int) -> some View {
         let path = compare.slots[index]
         let isFocused = index == compare.focused
         // Only the focused panel gets a border — with 2-4 photos already
@@ -196,7 +210,7 @@ struct CompareView: View {
                     Image(decorative: image, scale: 1)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .scaleEffect(zoom.zoomScale)
+                        .scaleEffect(zoom.liveScale)
                         .offset(zoom.panOffset)
                         .onAppear { model.loadLoupeImage(path) }
                         // A panel's view identity stays put when its slot

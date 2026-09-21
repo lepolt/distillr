@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Distillr
+@testable import Core
 
 func loadRealItems() throws -> [BurstItem] {
     try PhotoScanner.scanFolder(examplesDir()).map { source in

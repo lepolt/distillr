@@ -1,5 +1,5 @@
 import Foundation
-@testable import Distillr
+@testable import Core
 
 /// Real camera-file fixtures live one level up from `macos/`, shared with
 /// the original Rust app's test suite (see `crates/*/src/lib.rs`). Never
@@ -8,8 +8,10 @@ import Foundation
 func examplesDir() -> URL {
     URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent() // this file
-        .deletingLastPathComponent() // DistillrTests
+        .deletingLastPathComponent() // CoreTests
         .deletingLastPathComponent() // Tests
+        .deletingLastPathComponent() // Core
+        .deletingLastPathComponent() // Local Packages
         .deletingLastPathComponent() // macos
         .appendingPathComponent("examples")
 }

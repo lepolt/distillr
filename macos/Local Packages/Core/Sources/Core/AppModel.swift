@@ -28,7 +28,15 @@ struct GridFocus: Equatable {
 
 @MainActor
 @Observable
-final class AppModel {
+public final class AppModel {
+    /// Explicit and public even though every stored property already has a
+    /// default (which would otherwise synthesize this for free): a
+    /// synthesized init only ever matches the *type's* access level when
+    /// the type is a struct — for a class it's `internal` regardless, so
+    /// the app target (a separate module) couldn't call `AppModel()`
+    /// without this.
+    public init() {}
+
     var sourceFolder: URL?
     var groups: [BurstGroup] = []
     var thumbnails: [URL: CGImage] = [:]
@@ -351,11 +359,6 @@ final class AppModel {
 
     // MARK: - Compare
 
-    func compareGroupExhausted() -> Bool {
-        guard let compare else { return false }
-        return compare.slots.allSatisfy { $0 == nil }
-    }
-
     func enterCompare(groupIndex: Int, paths: [URL]) {
         guard !paths.isEmpty else { return }
         // `review` is deliberately left as-is (not nilled out): when Compare
@@ -434,8 +437,12 @@ final class AppModel {
 
     /// Records `decision` for whichever photo is in the focused panel, then
     /// refills that panel with the next available undecided photo from the
-    /// group (or leaves it empty if none remain) — mirrors how single-photo
-    /// review auto-advances after any decision.
+    /// group — mirrors how single-photo review auto-advances after any
+    /// decision. When there's nothing left to refill it with, the panel
+    /// count shrinks by one instead of leaving a dead empty slot; shrinking
+    /// to a single panel isn't really "comparing" anymore, so that falls
+    /// back to single-photo Review on whatever's left, and shrinking to
+    /// zero (the group's now fully decided) exits Compare entirely.
     func decideFocusedComparePanel(_ decision: Decision) {
         guard let compareState = compare else { return }
         let groupIndex = compareState.groupIndex
@@ -446,7 +453,50 @@ final class AppModel {
 
         let shown = Set((compare?.slots ?? []).compactMap { $0 })
         let replacement = compareBackfillCandidates(groupIndex: groupIndex, exclude: shown, needed: 1).first
-        compare?.slots[focused] = replacement
+
+        if let replacement {
+            compare?.slots[focused] = replacement
+            return
+        }
+
+        compare?.slots.remove(at: focused)
+        guard let remainingCount = compare?.slots.count else { return }
+        if remainingCount <= 1 {
+            let remainingPath = compare?.slots.first ?? nil
+            compare = nil
+            if let remainingPath, let itemIndex = groups[safe: groupIndex]?.items.firstIndex(where: { $0.path == remainingPath }) {
+                enterReview(groupIndex: groupIndex, itemIndex: itemIndex)
+            } else {
+                reconcileReviewAfterExitingCompare()
+            }
+        } else if focused >= remainingCount {
+            compare?.focused = remainingCount - 1
+        }
+    }
+
+    /// Clears Compare and returns to whichever of Review/Grid was
+    /// underneath — the shared exit path for Esc/"Back to review" and for
+    /// auto-exiting when there's nothing left to compare.
+    func exitCompare() {
+        compare = nil
+        reconcileReviewAfterExitingCompare()
+    }
+
+    /// `review.itemIndex` is a frozen snapshot from whenever Compare was
+    /// entered — deciding a photo *in* Compare (on any panel, not just the
+    /// one Review happened to be on) doesn't keep it in sync. Without this,
+    /// closing Compare could resurface a photo that's since been rejected,
+    /// showing it selected with its reject border instead of advancing
+    /// past it the way single-photo Review always does. Nudges to the
+    /// nearest still-active item, or drops to the grid if the whole group
+    /// is now decided.
+    private func reconcileReviewAfterExitingCompare() {
+        guard let review else { return }
+        if let target = nearestActiveIndex(groupIndex: review.groupIndex, from: review.itemIndex) {
+            self.review?.itemIndex = target
+        } else {
+            self.review = nil
+        }
     }
 
     // MARK: - Grid focus

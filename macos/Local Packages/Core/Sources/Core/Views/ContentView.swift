@@ -1,11 +1,20 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct ContentView: View {
+/// The one public entry point into Core's UI — everything it composes
+/// (`GridView`, `ReviewView`, `CompareView`, `WelcomeView`, ...) stays
+/// internal. The app target just hosts this inside its own `WindowGroup`,
+/// alongside whatever's actually an app-lifecycle concern (window
+/// activation, icon, sizing) rather than part of the culling UI itself.
+public struct ContentView: View {
     @Bindable var model: AppModel
     @State private var isDropTargeting = false
 
-    var body: some View {
+    public init(model: AppModel) {
+        self.model = model
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !model.groups.isEmpty {
                 header
@@ -32,18 +41,16 @@ struct ContentView: View {
 
     /// The compact folder/status bar shown once a folder is loaded. Before
     /// that, `WelcomeView`'s large tiles are the only "choose/drop a
-    /// folder" affordance; this row stays functional as a drop target too,
-    /// so switching to a different folder later doesn't require going back
-    /// to an empty state first.
+    /// folder" affordance; once a folder's loaded there's nothing left for
+    /// a "Choose Folder…" button here to do that dropping a new one on
+    /// this row doesn't already cover, so it's just the path plus Finalize
+    /// — but the row stays a functional drop target, so switching to a
+    /// different folder later doesn't require going back to an empty
+    /// state first.
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Button("Choose Folder…") {
-                    if let folder = FolderPicker.pickFolder() {
-                        model.loadFolder(folder)
-                    }
-                }
                 if let folder = model.sourceFolder {
                     Text(folder.path)
                         .foregroundStyle(.secondary)

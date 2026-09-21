@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Distillr
+@testable import Core
 
 struct FileActionsTests {
     private func tempFile(_ name: String, _ contents: String, label: String) -> URL {

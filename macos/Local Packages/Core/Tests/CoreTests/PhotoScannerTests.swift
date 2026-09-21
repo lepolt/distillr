@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import Distillr
+@testable import Core
 
 struct PhotoScannerTests {
     @Test func findsAllExamplePhotosSortedByPrimary() throws {
