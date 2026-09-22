@@ -51,6 +51,12 @@ public final class AppModel {
     var showFinalize = false
     var finalizeTrashRejected = true
     var finalizeCopyKeepers = true
+    /// Whether an Undecided photo counts as a keeper for Finalize's copy
+    /// step. Defaults on, matching the old unconditional behavior (a
+    /// review pass mostly presses X on the bad shots, so a photo you
+    /// never explicitly marked shouldn't be silently excluded) — but now
+    /// it's an explicit choice in `FinalizeSheet` rather than baked in.
+    var finalizeTreatUndecidedAsKeepers = true
     var finalizeDestination: URL?
     /// Set by `validateFinalizeDestination()` — a human-readable reason
     /// `finalizeDestination` can't actually be written to, or `nil` if it's
@@ -605,11 +611,18 @@ public final class AppModel {
 
     func rejectedPaths() -> [URL] { pathsMatching { $0 == .reject } }
 
-    /// Everything not explicitly rejected — Keep *and* Undecided. A review
-    /// pass mostly presses X on the bad shots, so treating "keeper" as
-    /// "anything not rejected" means a photo is never silently excluded
-    /// from Finalize just because it was never explicitly marked Keep.
-    func keeperPaths() -> [URL] { pathsMatching { $0 != .reject } }
+    /// Everything that counts as a keeper for Finalize's copy step: always
+    /// excludes Rejected, and — per `treatUndecidedAsKeepers` — either
+    /// includes Undecided too (the default: a review pass mostly presses X
+    /// on the bad shots, so a photo you never explicitly marked shouldn't
+    /// be silently excluded) or requires an explicit Keep.
+    func keeperPaths(treatUndecidedAsKeepers: Bool = true) -> [URL] {
+        pathsMatching(isKeeper(treatUndecidedAsKeepers: treatUndecidedAsKeepers))
+    }
+
+    private func isKeeper(treatUndecidedAsKeepers: Bool) -> (Decision) -> Bool {
+        treatUndecidedAsKeepers ? { $0 != .reject } : { $0 == .keep }
+    }
 
     func undecidedCount() -> Int { pathsMatching { $0 == .undecided }.count }
 
@@ -650,15 +663,17 @@ public final class AppModel {
     }
 
     /// Runs whichever of the two Finalize actions the user checked:
-    /// optionally copies every keeper (Keep + Undecided) to `destination`,
-    /// and optionally moves every rejected photo to the OS trash (removing
-    /// it from the loaded groups). Each action is independent.
-    func runFinalize(trashRejected: Bool, copyDestination: URL?) {
+    /// optionally copies every keeper to `destination` — Keep, plus
+    /// Undecided too unless `treatUndecidedAsKeepers` is off — and
+    /// optionally moves every rejected photo to the OS trash (removing it
+    /// from the loaded groups). Each action is independent.
+    func runFinalize(trashRejected: Bool, copyDestination: URL?, treatUndecidedAsKeepers: Bool = true) {
         var messages: [String] = []
 
         if let dest = copyDestination {
-            let keeperPhotos = keeperPaths()
-            let keeperFiles = filesMatching { $0 != .reject }
+            let isKeeper = isKeeper(treatUndecidedAsKeepers: treatUndecidedAsKeepers)
+            let keeperPhotos = pathsMatching(isKeeper)
+            let keeperFiles = filesMatching(isKeeper)
             let report = FileActions.copyPaths(keeperFiles, to: dest)
             let copied = Set(report.copied)
             let copiedPhotoCount = keeperPhotos.filter { copied.contains($0) }.count

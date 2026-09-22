@@ -6,7 +6,7 @@ struct FinalizeSheet: View {
 
     var body: some View {
         let rejectedCount = model.rejectedPaths().count
-        let keeperCount = model.keeperPaths().count
+        let keeperCount = model.keeperPaths(treatUndecidedAsKeepers: model.finalizeTreatUndecidedAsKeepers).count
         let undecidedCount = model.undecidedCount()
 
         VStack(alignment: .leading, spacing: 14) {
@@ -54,10 +54,12 @@ struct FinalizeSheet: View {
                 }
             }
 
-            if undecidedCount > 0 {
-                Text("\(undecidedCount) undecided photo\(plural(undecidedCount)) will be treated as keepers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if model.finalizeCopyKeepers && undecidedCount > 0 {
+                Toggle(
+                    "Treat \(undecidedCount) undecided photo\(plural(undecidedCount)) as keeper\(plural(undecidedCount))",
+                    isOn: $model.finalizeTreatUndecidedAsKeepers
+                )
+                .font(.caption)
             }
 
             HStack {
@@ -73,7 +75,11 @@ struct FinalizeSheet: View {
                         guard model.finalizeDestinationError == nil else { return }
                     }
                     let destination = model.finalizeCopyKeepers ? model.finalizeDestination : nil
-                    model.runFinalize(trashRejected: model.finalizeTrashRejected, copyDestination: destination)
+                    model.runFinalize(
+                        trashRejected: model.finalizeTrashRejected,
+                        copyDestination: destination,
+                        treatUndecidedAsKeepers: model.finalizeTreatUndecidedAsKeepers
+                    )
                     model.showFinalize = false
                 }
                 .keyboardShortcut(.defaultAction)

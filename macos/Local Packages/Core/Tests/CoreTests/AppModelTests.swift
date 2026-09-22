@@ -773,6 +773,43 @@ struct AppModelTests {
         try? FileManager.default.removeItem(at: dest)
     }
 
+    @Test func keeperPathsExcludesUndecidedWhenAsked() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.decisions[pathAt(0)] = .keep
+        model.decisions[pathAt(1)] = .reject
+        // pathAt(2) left undecided on purpose.
+
+        #expect(model.keeperPaths(treatUndecidedAsKeepers: false) == [pathAt(0)])
+        #expect(model.keeperPaths().contains(pathAt(2)), "default call still treats undecided as a keeper")
+    }
+
+    @Test func finalizeCanExcludeUndecidedFromKeepersWhenToggledOff() async {
+        let dir = disposableCopyOfExamples(["DSC_3676.JPG", "DSC_3677.JPG"])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("distillr-finalize-exclude-undecided-\(UUID().uuidString)")
+        let model = AppModel()
+
+        model.loadFolder(dir)
+        await waitForThumbnails(model, total: 2)
+        let keptPath = model.groups[0].items[0].path
+        let undecidedPath = model.groups[0].items[1].path
+        model.decisions[keptPath] = .keep
+        // undecidedPath is left Undecided on purpose.
+
+        model.runFinalize(trashRejected: false, copyDestination: dest, treatUndecidedAsKeepers: false)
+
+        #expect(FileManager.default.fileExists(atPath: dest.appendingPathComponent(keptPath.lastPathComponent).path), "explicit keeper should still be copied")
+        #expect(!FileManager.default.fileExists(atPath: dest.appendingPathComponent(undecidedPath.lastPathComponent).path), "undecided photo should be excluded when the toggle is off")
+        #expect(model.decisions[undecidedPath] == nil, "excluding it from this Finalize pass shouldn't force a decision")
+        #expect(model.groups[0].count == 2, "nothing removed since nothing was rejected")
+        let status = model.commitStatus!
+        #expect(status.contains("Copied 1 photo"))
+
+        try? FileManager.default.removeItem(at: dest)
+    }
+
     @Test func validateFinalizeDestinationClearsErrorWhenThereIsNoDestination() {
         let model = AppModel()
         model.finalizeDestinationError = "stale error from a previous destination"
