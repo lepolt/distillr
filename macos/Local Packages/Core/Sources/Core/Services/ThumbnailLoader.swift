@@ -19,7 +19,15 @@ enum ThumbnailLoader {
     static func decodeImage(_ url: URL, maxPixelSize: CGFloat) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            // ...IfAbsent, not ...Always: prefer the format's own embedded
+            // thumbnail/preview when one exists (which RAW files generally
+            // carry), only falling back to a full decode when a file
+            // genuinely lacks one. ...Always forces ImageIO to regenerate
+            // from the full image every time, which for RAW means a full
+            // demosaic on every decode instead of just reading the
+            // embedded preview — exactly what this function's own doc
+            // comment above says it avoids.
+            kCGImageSourceCreateThumbnailFromImageIfAbsent: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]

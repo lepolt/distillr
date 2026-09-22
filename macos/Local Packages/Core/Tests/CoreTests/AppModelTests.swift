@@ -62,6 +62,23 @@ struct AppModelTests {
         #expect(model.loupeCache[path] != nil)
     }
 
+    @Test func loupeCacheEvictsPhotosFarFromCurrentReviewPosition() async {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path } // Burst 1, 20 photos
+
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.loadLoupeImage(pathAt(0))
+        await waitForLoupeImage(model, path: pathAt(0))
+        #expect(model.loupeCache[pathAt(0)] != nil)
+
+        model.enterReview(groupIndex: 0, itemIndex: 15)
+        await waitForLoupeImage(model, path: pathAt(15))
+
+        #expect(model.loupeCache[pathAt(0)] == nil, "photos far from the current position should be evicted, not held for the whole session")
+        #expect(model.loupeCache[pathAt(15)] != nil)
+    }
+
     @Test func enterReviewOpensOnTheRequestedItem() {
         let model = AppModel()
         model.loadFolder(examplesDir())
@@ -331,6 +348,55 @@ struct AppModelTests {
         model.reviewMove(1)
 
         #expect(model.reviewGroupExhausted(), "no active photos remain, so review should treat the group as exhausted")
+    }
+
+    @Test func decidingAnItemWhenBurstStillHasUndecidedPhotosJustAdvancesNormally() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        model.enterReview(groupIndex: 0, itemIndex: 0) // Burst 1, 20 photos
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+
+        model.decideCurrentReviewItem(.keep)
+
+        #expect(model.decisions[pathAt(0)] == .keep)
+        #expect(model.review?.groupIndex == 0)
+        #expect(model.review?.itemIndex == 1, "burst still has undecided photos, so it just steps to the next one")
+    }
+
+    @Test func decidingTheLastUndecidedItemInABurstAdvancesToTheNextBurst() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        model.enterReview(groupIndex: 0, itemIndex: 0) // Burst 1, 20 photos
+        for item in model.groups[0].items {
+            model.decisions[item.path] = .keep
+        }
+        let lastPath = model.groups[0].items.last!.path
+        model.decisions[lastPath] = nil // leave exactly one undecided
+        model.review?.itemIndex = model.groups[0].items.count - 1
+
+        model.decideCurrentReviewItem(.keep)
+
+        #expect(model.decisions[lastPath] == .keep)
+        #expect(model.review?.groupIndex == 1, "deciding the last undecided photo in a burst should jump straight to the next one")
+        #expect(model.review?.itemIndex == 0)
+    }
+
+    @Test func decidingTheLastUndecidedItemInTheLastBurstStaysPut() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let lastGroup = model.groups.count - 1
+        model.enterReview(groupIndex: lastGroup, itemIndex: 0)
+        for item in model.groups[lastGroup].items {
+            model.decisions[item.path] = .keep
+        }
+        let lastPath = model.groups[lastGroup].items.last!.path
+        model.decisions[lastPath] = nil
+        model.review?.itemIndex = model.groups[lastGroup].items.count - 1
+
+        model.decideCurrentReviewItem(.keep)
+
+        #expect(model.decisions[lastPath] == .keep)
+        #expect(model.review?.groupIndex == lastGroup, "no next burst to jump to, so review stays on the last group")
     }
 
     // MARK: - Compare
@@ -705,5 +771,41 @@ struct AppModelTests {
         #expect(!status.contains("Trashed"))
 
         try? FileManager.default.removeItem(at: dest)
+    }
+
+    @Test func validateFinalizeDestinationClearsErrorWhenThereIsNoDestination() {
+        let model = AppModel()
+        model.finalizeDestinationError = "stale error from a previous destination"
+
+        model.validateFinalizeDestination()
+
+        #expect(model.finalizeDestinationError == nil)
+    }
+
+    @Test func validateFinalizeDestinationAcceptsAWritableFolder() {
+        let model = AppModel()
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("distillr-validate-dest-ok-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dest) }
+        model.finalizeDestination = dest
+
+        model.validateFinalizeDestination()
+
+        #expect(model.finalizeDestinationError == nil)
+    }
+
+    @Test func validateFinalizeDestinationFlagsAnUnwritableFolder() throws {
+        let model = AppModel()
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent("distillr-validate-dest-denied-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dest, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dest.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dest.path)
+            try? FileManager.default.removeItem(at: dest)
+        }
+        model.finalizeDestination = dest
+
+        model.validateFinalizeDestination()
+
+        #expect(model.finalizeDestinationError != nil, "an unwritable destination (e.g. an App Sandbox permission denial) should be caught before Finalize runs")
     }
 }

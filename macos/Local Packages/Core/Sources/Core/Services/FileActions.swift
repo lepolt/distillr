@@ -69,4 +69,30 @@ enum FileActions {
 
         return report
     }
+
+    /// Checks that `destination` is actually writable — creating it if it
+    /// doesn't exist yet, then writing and removing a small probe file —
+    /// rather than just inspecting permission bits: `isWritableFile(atPath:)`
+    /// doesn't account for App Sandbox's file-access entitlements, which
+    /// silently deny writes to a folder that otherwise looks normally
+    /// permissioned. Returns a human-readable reason it isn't writable, or
+    /// `nil` if it's fine. Meant to be called before Finalize actually
+    /// copies anything, so a permission problem surfaces as one clear
+    /// message up front instead of a wall of per-photo copy failures.
+    static func writeAccessError(for destination: URL) -> String? {
+        do {
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        } catch {
+            return "Can't create \(destination.lastPathComponent): \(error.localizedDescription)"
+        }
+
+        let probe = destination.appendingPathComponent(".distillr-write-test-\(UUID().uuidString)")
+        do {
+            try Data().write(to: probe)
+        } catch {
+            return "Distillr doesn't have permission to write to \(destination.path)."
+        }
+        try? FileManager.default.removeItem(at: probe)
+        return nil
+    }
 }

@@ -78,4 +78,28 @@ struct FileActionsTests {
         #expect(report.skippedExisting == [a])
         #expect(try Data(contentsOf: dest.appendingPathComponent("a.jpg")) == Data("already-there".utf8))
     }
+
+    @Test func writeAccessErrorIsNilForAWritableDestination() {
+        let dest = tempDir("write-check-ok")
+        #expect(FileActions.writeAccessError(for: dest) == nil)
+    }
+
+    @Test func writeAccessErrorCreatesTheDestinationIfItDoesNotExistYet() {
+        let dest = tempDir("write-check-create").appendingPathComponent("nested")
+        #expect(FileActions.writeAccessError(for: dest) == nil)
+        #expect(FileManager.default.fileExists(atPath: dest.path))
+    }
+
+    @Test func writeAccessErrorReportsAnUnwritableDestination() throws {
+        // Mirrors the App Sandbox permission failure this check exists to
+        // catch up front: a folder that exists and looks normal but can't
+        // actually be written to.
+        let dest = tempDir("write-check-denied")
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: dest.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dest.path) }
+
+        let error = FileActions.writeAccessError(for: dest)
+
+        #expect(error != nil)
+    }
 }

@@ -52,6 +52,13 @@ public final class AppModel {
     var finalizeTrashRejected = true
     var finalizeCopyKeepers = true
     var finalizeDestination: URL?
+    /// Set by `validateFinalizeDestination()` — a human-readable reason
+    /// `finalizeDestination` can't actually be written to, or `nil` if it's
+    /// fine (or unchecked). Surfaced inline in `FinalizeSheet` so a
+    /// permission problem (e.g. App Sandbox denying write access to a
+    /// folder that otherwise looks fine) is caught before Finalize runs,
+    /// not after it's already failed to copy anything.
+    var finalizeDestinationError: String?
     var commitStatus: String?
     /// Multi-selected thumbnails in the grid, used to seed Compare mode.
     var selected: Set<URL> = []
@@ -77,6 +84,7 @@ public final class AppModel {
         loupeCache = [:]
         showFinalize = false
         finalizeDestination = nil
+        finalizeDestinationError = nil
         commitStatus = nil
         selected = []
         compare = nil
@@ -241,6 +249,15 @@ public final class AppModel {
         return nearestActiveIndex(groupIndex: review.groupIndex, from: review.itemIndex) == nil
     }
 
+    /// True once every item in `groupIndex` has an explicit decision (Keep
+    /// or Reject) — nothing left undecided, as opposed to
+    /// `reviewGroupExhausted`, which is about nothing left *active*
+    /// (non-rejected) to show.
+    func groupFullyDecided(_ groupIndex: Int) -> Bool {
+        guard let group = groups[safe: groupIndex] else { return true }
+        return group.items.allSatisfy { (decisions[$0.path] ?? .undecided) != .undecided }
+    }
+
     /// Moves Review to the first active item of the next (`delta` = 1) or
     /// previous (`delta` = -1) burst group. Clamped at the ends — no
     /// wraparound — and a no-op when not currently in Review.
@@ -324,6 +341,24 @@ public final class AppModel {
         }
     }
 
+    /// Records `decision` for the current review photo, then advances —
+    /// mirrors `reviewMove(1)`'s usual "step to the next active item"
+    /// EXCEPT when this decision was the last undecided item in the burst,
+    /// in which case there's nothing left to review here, so it jumps
+    /// straight to the next burst instead of leaving you cycling back and
+    /// forth through already-decided (kept) photos. A no-op burst jump at
+    /// the very last group (same clamping `reviewMoveBurst` always does)
+    /// just leaves the final decided photo on screen.
+    func decideCurrentReviewItem(_ decision: Decision) {
+        guard let review, let path = currentReviewPath() else { return }
+        decisions[path] = decision
+        if groupFullyDecided(review.groupIndex) {
+            reviewMoveBurst(1)
+        } else {
+            reviewMove(1)
+        }
+    }
+
     /// Decodes off the main actor — a synchronous decode here would block
     /// the UI thread on every arrow-key press, which is exactly what made
     /// navigating Review feel slow. `loupeCache` fills in once the
@@ -342,6 +377,31 @@ public final class AppModel {
         if let image {
             loupeCache[path] = image
         }
+        pruneLoupeCache()
+    }
+
+    /// Bounds `loupeCache` to roughly what's on screen or about to be — the
+    /// current review item and its prefetched neighbors, plus everything
+    /// visible in Compare — rather than letting it grow for the whole
+    /// session. At `loupeMaxSide`, each cached decode is tens of MB;
+    /// reviewing a few hundred photos before Finalize (nothing is removed
+    /// from `loupeCache` just by deciding a photo, only by trashing it)
+    /// would otherwise keep every one of them resident at once. Runs after
+    /// every load, i.e. essentially every navigation step, rather than on
+    /// a timer — cheap enough that there's no reason to defer it.
+    private func pruneLoupeCache() {
+        var keep: Set<URL> = []
+        if let review, let group = groups[safe: review.groupIndex] {
+            for offset in -2...2 {
+                if let path = group.items[safe: review.itemIndex + offset]?.path {
+                    keep.insert(path)
+                }
+            }
+        }
+        if let compare {
+            keep.formUnion(compare.slots.compactMap { $0 })
+        }
+        loupeCache = loupeCache.filter { keep.contains($0.key) }
     }
 
     /// Kicks off (backgrounded) decode of the current review photo plus its
@@ -572,6 +632,21 @@ public final class AppModel {
     /// or copies together as a unit, not just its JPEG half.
     func filesMatching(_ predicate: (Decision) -> Bool) -> [URL] {
         itemsMatching(predicate).flatMap { primary, sidecar in [primary] + (sidecar.map { [$0] } ?? []) }
+    }
+
+    /// Re-checks whether `finalizeDestination` can actually be written to,
+    /// updating `finalizeDestinationError`. Called right after a
+    /// destination is chosen and whenever the Finalize sheet appears
+    /// (covers a destination picked earlier in the session whose
+    /// volume/permissions may have changed since), so a permission problem
+    /// is caught up front rather than surfacing as a wall of per-photo
+    /// copy failures after Confirm.
+    func validateFinalizeDestination() {
+        guard let destination = finalizeDestination else {
+            finalizeDestinationError = nil
+            return
+        }
+        finalizeDestinationError = FileActions.writeAccessError(for: destination)
     }
 
     /// Runs whichever of the two Finalize actions the user checked:

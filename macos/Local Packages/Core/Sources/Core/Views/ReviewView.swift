@@ -110,9 +110,7 @@ struct ReviewView: View {
     }
 
     private func decide(_ decision: Decision) {
-        guard let path = model.currentReviewPath() else { return }
-        model.decisions[path] = decision
-        model.reviewMove(1)
+        model.decideCurrentReviewItem(decision)
     }
 
     private func expandToCompare(_ count: Int) {
@@ -201,19 +199,23 @@ private struct ReviewImageArea: View {
             // the buttons always have somewhere to be, at any zoom level.
             let sideReserve = buttonRadius * 2 + buttonGap + 8
             let photoAvailableWidth = max(available.width - sideReserve * 2, 100)
+            // The largest ratio-preserving rectangle that fits within
+            // (photoAvailableWidth, available.height) — by construction
+            // there's no room to grow this further in EITHER dimension
+            // without either breaking the ratio or invading the button
+            // margin, so unlike the growing-with-zoom box this used to be,
+            // this frame stays fixed regardless of zoom. `.scaleEffect`
+            // below is the only thing that zooms — it reveals more of the
+            // photo via crop within this fixed frame, which can never
+            // distort its ratio (confirmed by literally rendering this
+            // with ImageRenderer and looking at the pixels at several zoom
+            // levels, the same technique that caught the original
+            // letterboxing bug here).
             let fitted = photoAvailableWidth / available.height > ratio
                 ? CGSize(width: available.height * ratio, height: available.height)
                 : CGSize(width: photoAvailableWidth, height: photoAvailableWidth / ratio)
-            // Grows past the letterboxed size as you zoom in — capped at
-            // the (margin-reserved) available area — so zooming actually
-            // reveals more of the photo instead of just cropping tighter
-            // inside a frame stuck at the unzoomed size.
-            let visible = CGSize(
-                width: min(photoAvailableWidth, fitted.width * zoom.liveScale),
-                height: min(available.height, fitted.height * zoom.liveScale)
-            )
-            let leftX = center.x - visible.width / 2 - buttonGap - buttonRadius
-            let rightX = center.x + visible.width / 2 + buttonGap + buttonRadius
+            let leftX = center.x - fitted.width / 2 - buttonGap - buttonRadius
+            let rightX = center.x + fitted.width / 2 + buttonGap + buttonRadius
 
             ZStack {
                 Group {
@@ -227,7 +229,7 @@ private struct ReviewImageArea: View {
                         ProgressView()
                     }
                 }
-                .frame(width: visible.width, height: visible.height)
+                .frame(width: fitted.width, height: fitted.height)
                 .clipped()
                 // Only an explicit Keep/Reject gets a border — an
                 // "undecided" photo (viewed or not) showing a gray/yellow

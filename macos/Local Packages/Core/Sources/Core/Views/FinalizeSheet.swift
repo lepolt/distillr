@@ -37,8 +37,20 @@ struct FinalizeSheet: View {
                     Button("Choose…") {
                         if let folder = FolderPicker.pickDestinationFolder() {
                             model.finalizeDestination = folder
+                            model.validateFinalizeDestination()
                         }
                     }
+                }
+
+                // Caught here, before Confirm, rather than only surfacing
+                // as a wall of per-photo copy failures after the fact —
+                // this is exactly the App Sandbox permission failure that
+                // first showed up as Finalize silently failing to copy
+                // anything off an SD card.
+                if let error = model.finalizeDestinationError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
             }
 
@@ -56,15 +68,23 @@ struct FinalizeSheet: View {
                 .keyboardShortcut(.cancelAction)
 
                 Button("Confirm") {
+                    if model.finalizeCopyKeepers {
+                        model.validateFinalizeDestination()
+                        guard model.finalizeDestinationError == nil else { return }
+                    }
                     let destination = model.finalizeCopyKeepers ? model.finalizeDestination : nil
                     model.runFinalize(trashRejected: model.finalizeTrashRejected, copyDestination: destination)
                     model.showFinalize = false
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(model.finalizeCopyKeepers && model.finalizeDestination == nil && keeperCount > 0)
+                .disabled(
+                    model.finalizeCopyKeepers && keeperCount > 0
+                        && (model.finalizeDestination == nil || model.finalizeDestinationError != nil)
+                )
             }
         }
         .padding(20)
         .frame(width: 380)
+        .onAppear { model.validateFinalizeDestination() }
     }
 }
