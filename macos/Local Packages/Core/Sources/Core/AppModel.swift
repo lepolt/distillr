@@ -10,6 +10,15 @@ struct ReviewState: Equatable {
 
 let maxComparePanels = 4
 
+/// How many photos on each side of the current review position to
+/// proactively decode ahead of time, so arrow-key navigation feels instant
+/// instead of waiting on a fresh decode.
+let loupePrefetchRadius = 4
+/// How many photos on each side of the current position `loupeCache`
+/// keeps once loaded — wider than the prefetch radius so browsing back and
+/// forth a little doesn't keep re-decoding photos you just moved past.
+let loupeCacheKeepRadius = 9
+
 struct CompareState: Equatable {
     var groupIndex: Int
     /// One entry per visible panel. `nil` means the slot ran out of
@@ -374,10 +383,15 @@ public final class AppModel {
     /// the UI thread on every arrow-key press, which is exactly what made
     /// navigating Review feel slow. `loupeCache` fills in once the
     /// background decode finishes; the view shows a spinner until then.
-    func loadLoupeImage(_ path: URL) {
-        if loupeCache[path] != nil || loupeLoadsInFlight.contains(path) { return }
+    /// Returns the underlying task (`nil` if there was nothing to do — see
+    /// `prefetchLoupeNeighbors`, which awaits it before starting on
+    /// neighbors) so the current photo's decode isn't racing several
+    /// prefetch decodes for a slot nobody's looking at yet.
+    @discardableResult
+    func loadLoupeImage(_ path: URL) -> Task<Void, Never>? {
+        if loupeCache[path] != nil || loupeLoadsInFlight.contains(path) { return nil }
         loupeLoadsInFlight.insert(path)
-        Task.detached(priority: .userInitiated) { [weak self] in
+        return Task.detached(priority: .userInitiated) { [weak self] in
             let image = ThumbnailLoader.decodeImage(path, maxPixelSize: loupeMaxSide)
             await self?.finishLoupeLoad(path, image: image)
         }
@@ -403,7 +417,7 @@ public final class AppModel {
     private func pruneLoupeCache() {
         var keep: Set<URL> = []
         if let review, let group = groups[safe: review.groupIndex] {
-            for offset in -2...2 {
+            for offset in -loupeCacheKeepRadius...loupeCacheKeepRadius {
                 if let path = group.items[safe: review.itemIndex + offset]?.path {
                     keep.insert(path)
                 }
@@ -415,15 +429,35 @@ public final class AppModel {
         loupeCache = loupeCache.filter { keep.contains($0.key) }
     }
 
-    /// Kicks off (backgrounded) decode of the current review photo plus its
-    /// immediate neighbors, so by the time you press the arrow key again
-    /// the next image is very likely already cached instead of decoding on
-    /// the keypress itself.
+    /// Kicks off (backgrounded) decode of the current review photo, then —
+    /// only once that one's actually done — its next `loupePrefetchRadius`
+    /// neighbors on each side, so by the time you press the arrow key
+    /// again the next image is very likely already cached instead of
+    /// decoding on the keypress itself.
+    ///
+    /// The neighbors deliberately wait on the current photo's own decode
+    /// rather than firing off alongside it: entering Review used to kick
+    /// off 3 full-resolution decodes simultaneously (current + 2
+    /// neighbors), which was enough concurrent pressure on ImageIO's
+    /// decode pipeline to intermittently log "IOSurface creation failed"
+    /// (harmless — everything still decoded fine — but avoidable). There's
+    /// no real need for the neighbors to race the one photo you're
+    /// actually looking at right now.
     private func prefetchLoupeNeighbors() {
         guard let review, let group = groups[safe: review.groupIndex] else { return }
-        for offset in [0, 1, -1] {
-            if let path = group.items[safe: review.itemIndex + offset]?.path {
-                loadLoupeImage(path)
+        guard let currentPath = group.items[safe: review.itemIndex]?.path else { return }
+
+        let currentLoad = loadLoupeImage(currentPath)
+        Task { [weak self] in
+            await currentLoad?.value
+            guard let self else { return }
+            for offset in 1...loupePrefetchRadius {
+                if let path = group.items[safe: review.itemIndex + offset]?.path {
+                    self.loadLoupeImage(path)
+                }
+                if let path = group.items[safe: review.itemIndex - offset]?.path {
+                    self.loadLoupeImage(path)
+                }
             }
         }
     }
