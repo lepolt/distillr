@@ -9,35 +9,43 @@ let thumbnailMaxSide: CGFloat = 200
 // look in Compare mode.
 let loupeMaxSide: CGFloat = 4000
 
-/// Decodes a photo (JPEG or RAW — RAW via its embedded preview, not a real
-/// demosaic) for display, downscaled to `maxPixelSize` and with EXIF
-/// orientation already applied by ImageIO, so portrait shots come out
-/// right-side up without any manual rotation. Returns `CGImage` rather than
-/// `NSImage`: immutable and safe to hand across a background decode task,
-/// and SwiftUI's `Image` accepts it directly.
+/// Decodes a photo (JPEG or RAW) for display, downscaled to `maxPixelSize`
+/// with EXIF orientation already applied by ImageIO, so portrait shots come
+/// out right-side up without any manual rotation. Returns `CGImage` rather
+/// than `NSImage`: immutable and safe to hand across a background decode
+/// task, and SwiftUI's `Image` accepts it directly.
 enum ThumbnailLoader {
-    static func decodeImage(_ url: URL, maxPixelSize: CGFloat) -> CGImage? {
+    /// `verifyResolution` controls whether the format's own embedded
+    /// thumbnail/preview is trusted outright, or only used when it's
+    /// actually as large as `maxPixelSize`:
+    ///
+    /// - `false` (grid thumbnails): always take the cheap embedded-preview
+    ///   path. For RAW this avoids a full demosaic; for JPEG, the embedded
+    ///   EXIF preview (~160x120 — a smaller re-render of the same image,
+    ///   not a stale or unrelated one) is plenty for a small grid cell.
+    ///   ImageIO already falls back to a full decode on its own whenever a
+    ///   file genuinely has no embedded preview, so nothing is lost when
+    ///   one happens to be missing.
+    /// - `true` (Review/Compare's full-resolution loupe): verify the
+    ///   embedded preview actually meets `maxPixelSize` before trusting
+    ///   it, falling back to a full decode otherwise. Needed because most
+    ///   plain JPEGs' embedded preview is far too small for a 4000px
+    ///   loupe view — confirmed by decoding a real 6048x4032 JPEG and
+    ///   getting exactly that tiny 160x120 preview back, unmodified.
+    static func decodeImage(_ url: URL, maxPixelSize: CGFloat, verifyResolution: Bool = true) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
         let baseOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
 
-        // Prefer the format's own embedded thumbnail/preview first (cheap —
-        // for RAW specifically, the alternative is a full demosaic on every
-        // decode) — but only trust it if it's actually big enough to satisfy
-        // `maxPixelSize`. Confirmed by decoding a real 6048x4032 JPEG: most
-        // plain JPEGs carry nothing but a tiny ~160x120 EXIF preview meant
-        // for a camera's own LCD, and ...IfAbsent hands that straight back
-        // with no upscaling — which is what was making every photo in
-        // Review look low-resolution, not just RAW files. Falling back to a
-        // full decode whenever the cheap path comes up short keeps the RAW
-        // fast-path benefit without silently degrading everything else.
         var ifAbsentOptions = baseOptions
         ifAbsentOptions[kCGImageSourceCreateThumbnailFromImageIfAbsent] = true
-        if let image = CGImageSourceCreateThumbnailAtIndex(source, 0, ifAbsentOptions as CFDictionary),
-           CGFloat(max(image.width, image.height)) >= maxPixelSize {
-            return image
+        let cheap = CGImageSourceCreateThumbnailAtIndex(source, 0, ifAbsentOptions as CFDictionary)
+
+        guard verifyResolution else { return cheap }
+        if let cheap, CGFloat(max(cheap.width, cheap.height)) >= maxPixelSize {
+            return cheap
         }
 
         var alwaysOptions = baseOptions

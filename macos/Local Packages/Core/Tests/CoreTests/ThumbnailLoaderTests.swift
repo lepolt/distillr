@@ -38,4 +38,15 @@ struct ThumbnailLoaderTests {
         let image = try #require(ThumbnailLoader.decodeImage(examplePath("DSC_3676.JPG"), maxPixelSize: 4000))
         #expect(max(image.width, image.height) >= 4000)
     }
+
+    /// Grid thumbnails pass `verifyResolution: false` specifically to take
+    /// the cheap embedded-preview path outright, even though that preview
+    /// is smaller than what's being asked for — trading a bit of fidelity
+    /// for skipping a full decode of every photo in the folder.
+    @Test func trustsTheEmbeddedPreviewOutrightWhenResolutionIsNotVerified() throws {
+        let image = try #require(
+            ThumbnailLoader.decodeImage(examplePath("DSC_3676.JPG"), maxPixelSize: 200, verifyResolution: false)
+        )
+        #expect(max(image.width, image.height) < 200, "should be the small embedded preview, not a fresh 200px decode")
+    }
 }

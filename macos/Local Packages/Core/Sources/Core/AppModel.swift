@@ -133,7 +133,12 @@ public final class AppModel {
             await withTaskGroup(of: (URL, CGImage?).self) { group in
                 for path in pathsToLoad {
                     group.addTask {
-                        (path, ThumbnailLoader.decodeImage(path, maxPixelSize: thumbnailMaxSide))
+                        // No resolution verification for grid thumbnails —
+                        // see ThumbnailLoader.decodeImage's doc comment:
+                        // trusting the cheap embedded preview outright
+                        // (skipping a full JPEG decode/demosaic for every
+                        // photo) is what makes the initial folder load fast.
+                        (path, ThumbnailLoader.decodeImage(path, maxPixelSize: thumbnailMaxSide, verifyResolution: false))
                     }
                 }
                 for await (path, image) in group {
