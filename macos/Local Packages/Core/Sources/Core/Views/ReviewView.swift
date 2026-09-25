@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ReviewView: View {
@@ -25,6 +26,9 @@ struct ReviewView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Burst \(groupIndex + 1) — photo \(itemIndex + 1) of \(groupPaths.count)")
+                if model.reviewSelection.count > 1 {
+                    Text("· \(model.reviewSelection.count) selected").foregroundStyle(.secondary)
+                }
                 Text(decision.label).foregroundStyle(decision.color)
                 Spacer()
             }
@@ -68,6 +72,8 @@ struct ReviewView: View {
     private var shortcuts: some View {
         ShortcutButton(key: .leftArrow) { model.reviewMove(-1) }
         ShortcutButton(key: .rightArrow) { model.reviewMove(1) }
+        ShortcutButton(key: .leftArrow, modifiers: [.shift]) { model.extendReviewSelection(-1) }
+        ShortcutButton(key: .rightArrow, modifiers: [.shift]) { model.extendReviewSelection(1) }
         ShortcutButton(key: .tab) { model.reviewMoveBurst(1) }
         ShortcutButton(key: .tab, modifiers: [.shift]) { model.reviewMoveBurst(-1) }
         ShortcutButton(key: KeyEquivalent("k")) { decide(.keep) }
@@ -131,12 +137,17 @@ struct ReviewView: View {
                 ForEach(Array(model.groups[groupIndex].items.enumerated()), id: \.offset) { i, item in
                     if (model.decisions[item.path] ?? .undecided) != .reject {
                         Button {
-                            model.review?.itemIndex = i
+                            if NSEvent.modifierFlags.contains(.shift) {
+                                model.extendReviewSelection(to: i)
+                            } else {
+                                model.review?.itemIndex = i
+                                model.clearReviewSelection()
+                            }
                         } label: {
                             BorderedThumbnail(
                                 image: model.thumbnails[item.path],
                                 decisionColor: model.borderColor(for: item.path),
-                                accentRing: i == itemIndex,
+                                accentRing: i == itemIndex || model.reviewSelection.contains(item.path),
                                 size: 56
                             )
                         }

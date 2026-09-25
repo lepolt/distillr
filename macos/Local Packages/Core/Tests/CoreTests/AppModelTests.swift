@@ -399,6 +399,109 @@ struct AppModelTests {
         #expect(model.review?.groupIndex == lastGroup, "no next burst to jump to, so review stays on the last group")
     }
 
+    @Test func extendReviewSelectionGrowsAndShrinksAnchoredRange() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+
+        model.extendReviewSelection(1)
+        model.extendReviewSelection(1)
+        model.extendReviewSelection(1)
+        #expect(model.reviewSelection == Set([pathAt(0), pathAt(1), pathAt(2), pathAt(3)]))
+
+        model.extendReviewSelection(-1)
+        #expect(
+            model.reviewSelection == Set([pathAt(0), pathAt(1), pathAt(2)]),
+            "moving back toward the anchor should shrink the range, not just stop growing"
+        )
+    }
+
+    @Test func extendReviewSelectionExcludesRejectedItemsInTheRange() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.decisions[pathAt(2)] = .reject
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+
+        model.extendReviewSelection(1) // active index 1
+        model.extendReviewSelection(1) // active index 3, skipping rejected index 2
+        model.extendReviewSelection(1) // active index 4
+
+        #expect(model.reviewSelection == Set([pathAt(0), pathAt(1), pathAt(3), pathAt(4)]))
+        #expect(!model.reviewSelection.contains(pathAt(2)))
+    }
+
+    @Test func extendReviewSelectionToAClickedIndexGrowsAndShrinksFromTheAnchor() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 5)
+
+        model.extendReviewSelection(to: 8)
+        #expect(model.reviewSelection == Set([pathAt(5), pathAt(6), pathAt(7), pathAt(8)]))
+        #expect(model.review?.itemIndex == 8)
+
+        model.extendReviewSelection(to: 6)
+        #expect(model.reviewSelection == Set([pathAt(5), pathAt(6)]), "the anchor stays at 5 across both Shift-clicks")
+    }
+
+    @Test func plainReviewMoveCollapsesAnActiveSelection() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.extendReviewSelection(1)
+        model.extendReviewSelection(1)
+        #expect(model.reviewSelection.count == 3)
+
+        model.reviewMove(1)
+
+        #expect(model.reviewSelection.isEmpty)
+    }
+
+    @Test func reviewMoveBurstClearsASelectionFromTheBurstLeftBehind() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.extendReviewSelection(1)
+        #expect(!model.reviewSelection.isEmpty)
+
+        model.reviewMoveBurst(1)
+
+        #expect(model.review?.groupIndex == 1)
+        #expect(model.reviewSelection.isEmpty)
+    }
+
+    @Test func decideCurrentReviewItemAppliesToTheWholeSelectionAndClearsIt() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.extendReviewSelection(1)
+        model.extendReviewSelection(1) // selects indices 0, 1, 2
+
+        model.decideCurrentReviewItem(.reject)
+
+        #expect(model.decisions[pathAt(0)] == .reject)
+        #expect(model.decisions[pathAt(1)] == .reject)
+        #expect(model.decisions[pathAt(2)] == .reject)
+        #expect(model.reviewSelection.isEmpty)
+        #expect(model.review?.itemIndex == 3, "should land on the next still-active photo past the rejected range")
+    }
+
+    @Test func decideCurrentReviewItemFallsBackToTheSinglePhotoWhenNothingIsSelected() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        #expect(model.reviewSelection.isEmpty, "no Shift-extend happened, so this is the ordinary single-photo path")
+
+        model.decideCurrentReviewItem(.keep)
+
+        #expect(model.decisions[pathAt(0)] == .keep)
+        #expect(model.decisions[pathAt(1)] == nil, "only the current photo should be decided, not neighbors")
+    }
+
     // MARK: - Compare
 
     @Test func enterCompareSeedsSlotsAndFocusesFirstPanel() {

@@ -76,7 +76,19 @@ public final class AppModel {
     var finalizeDestinationError: String?
     var commitStatus: String?
     /// Multi-selected thumbnails in the grid, used to seed Compare mode.
+    /// Entirely separate from `reviewSelection` below — deliberately so,
+    /// to keep a Grid Cmd-click selection in one burst from ever being
+    /// swept up by a bulk Keep/Reject made while reviewing a different one.
     var selected: Set<URL> = []
+    /// The run of photos a `Shift`-extended selection in Review currently
+    /// spans — `K`/`X`/`U` apply to all of them when non-empty, instead of
+    /// just the current photo. See `extendReviewSelection`.
+    var reviewSelection: Set<URL> = []
+    /// Where the current Review range-select gesture started — an index
+    /// into `review!.groupIndex`'s full item list (the same addressing
+    /// `review.itemIndex` itself uses), not Grid's active-list-relative
+    /// `GridFocus.activeIndex`. `nil` when there's no selection in progress.
+    private var reviewSelectionAnchor: Int?
     var compare: CompareState?
     var gridFocus: GridFocus?
     /// Kept in sync by `GridView` from its `GeometryReader` width, so the
@@ -102,6 +114,8 @@ public final class AppModel {
         finalizeDestinationError = nil
         commitStatus = nil
         selected = []
+        reviewSelection = []
+        reviewSelectionAnchor = nil
         compare = nil
         gridFocus = nil
 
@@ -231,6 +245,7 @@ public final class AppModel {
     func enterReview(groupIndex: Int, itemIndex: Int) {
         let target = nearestActiveIndex(groupIndex: groupIndex, from: itemIndex) ?? itemIndex
         review = ReviewState(groupIndex: groupIndex, itemIndex: target)
+        clearReviewSelection()
         prefetchLoupeNeighbors()
     }
 
@@ -316,18 +331,14 @@ public final class AppModel {
         return indices.map { group.items[$0].path }
     }
 
-    /// Moves the current review item by `delta` steps, counting only
-    /// non-rejected items and skipping over rejected ones — so arrowing
-    /// through a group never lands on (or passes visibly through) a photo
-    /// that's already been rejected. Clamps at the nearest active item to
-    /// either end once there's nothing further to move to.
-    func reviewMove(_ delta: Int) {
-        guard let review else { return }
-        let groupIndex = review.groupIndex
-        let start = review.itemIndex
-        guard let group = groups[safe: groupIndex] else { return }
+    /// Active (non-rejected) index `delta` steps from `start` in `group`,
+    /// skipping over rejected items along the way and clamping at either
+    /// end — shared stepping logic for `reviewMove` and
+    /// `extendReviewSelection`, so a plain arrow and a Shift-extended one
+    /// always land on the same photo for the same delta.
+    private func steppedActiveIndex(from start: Int, delta: Int, in group: BurstGroup) -> Int? {
         let len = group.items.count
-        guard len > 0 else { return }
+        guard len > 0 else { return nil }
 
         let active: [Bool] = (0..<len).map { isActive(group, $0) }
         let step = delta >= 0 ? 1 : -1
@@ -344,6 +355,21 @@ public final class AppModel {
                 remaining -= 1
             }
         }
+        return target
+    }
+
+    /// Moves the current review item by `delta` steps, counting only
+    /// non-rejected items and skipping over rejected ones — so arrowing
+    /// through a group never lands on (or passes visibly through) a photo
+    /// that's already been rejected. Clamps at the nearest active item to
+    /// either end once there's nothing further to move to. A plain
+    /// (non-extending) move always collapses any in-progress Shift-range
+    /// selection, matching how Finder/text selection behaves elsewhere.
+    func reviewMove(_ delta: Int) {
+        guard let review else { return }
+        let groupIndex = review.groupIndex
+        let start = review.itemIndex
+        guard let group = groups[safe: groupIndex] else { return }
 
         // Nothing found in the requested direction — this happens when the
         // starting item was just rejected and was the last active item
@@ -351,31 +377,101 @@ public final class AppModel {
         // to the nearest active item in either direction, so rejecting the
         // last photo re-selects the previous one instead of leaving the
         // just-rejected photo showing.
-        if target == nil {
-            target = nearestActiveIndex(groupIndex: groupIndex, from: start)
-        }
+        let target = steppedActiveIndex(from: start, delta: delta, in: group)
+            ?? nearestActiveIndex(groupIndex: groupIndex, from: start)
 
         if let target {
             self.review?.itemIndex = target
+            clearReviewSelection()
             prefetchLoupeNeighbors()
         }
     }
 
-    /// Records `decision` for the current review photo, then advances —
-    /// mirrors `reviewMove(1)`'s usual "step to the next active item"
-    /// EXCEPT when this decision was the last undecided item in the burst,
-    /// in which case there's nothing left to review here, so it jumps
-    /// straight to the next burst instead of leaving you cycling back and
-    /// forth through already-decided (kept) photos. A no-op burst jump at
-    /// the very last group (same clamping `reviewMoveBurst` always does)
-    /// just leaves the final decided photo on screen.
+    /// Extends (or starts) a Finder-style anchored range selection by
+    /// `delta` active steps from the current position — the arrow-key
+    /// entry point, sharing `reviewMove`'s own stepping logic so a
+    /// Shift-held arrow always lands on the same photo a plain one would.
+    func extendReviewSelection(_ delta: Int) {
+        guard let review else { return }
+        let groupIndex = review.groupIndex
+        guard let group = groups[safe: groupIndex] else { return }
+        guard let target = steppedActiveIndex(from: review.itemIndex, delta: delta, in: group) else { return }
+        applyReviewSelectionRange(to: target, groupIndex: groupIndex, group: group)
+    }
+
+    /// Click entry point for the filmstrip's Shift-click range-select —
+    /// same anchored-range behavior as `extendReviewSelection(_:)`, just
+    /// from a direct target index instead of a step count.
+    func extendReviewSelection(to targetIndex: Int) {
+        guard let review else { return }
+        let groupIndex = review.groupIndex
+        guard let group = groups[safe: groupIndex], group.items[safe: targetIndex] != nil else { return }
+        applyReviewSelectionRange(to: targetIndex, groupIndex: groupIndex, group: group)
+    }
+
+    /// Shared by both `extendReviewSelection` entry points: seeds the
+    /// anchor from the current position if this is a fresh gesture, moves
+    /// `review.itemIndex` to `target`, then recomputes `reviewSelection`
+    /// as exactly the active items between anchor and target (inclusive)
+    /// — a full recompute every call, not an incremental add, so moving
+    /// back genuinely shrinks the selection instead of just stopping.
+    private func applyReviewSelectionRange(to target: Int, groupIndex: Int, group: BurstGroup) {
+        let anchor = reviewSelectionAnchor ?? review!.itemIndex
+        reviewSelectionAnchor = anchor
+        review?.itemIndex = target
+
+        let lo = min(anchor, target)
+        let hi = max(anchor, target)
+        reviewSelection = Set((lo...hi).compactMap { i in
+            isActive(group, i) ? group.items[i].path : nil
+        })
+        prefetchLoupeNeighbors()
+    }
+
+    /// Clears any in-progress Review range selection.
+    func clearReviewSelection() {
+        reviewSelection = []
+        reviewSelectionAnchor = nil
+    }
+
+    /// Records `decision` for the current review photo — or, if a
+    /// Shift-extended range is active, for every photo in it at once —
+    /// then advances: mirrors `reviewMove(1)`'s usual "step to the next
+    /// active item" EXCEPT when this decision was the last undecided item
+    /// in the burst, in which case there's nothing left to review here, so
+    /// it jumps straight to the next burst instead of leaving you cycling
+    /// back and forth through already-decided (kept) photos. A no-op burst
+    /// jump at the very last group (same clamping `reviewMoveBurst` always
+    /// does) just leaves the final decided photo on screen.
     func decideCurrentReviewItem(_ decision: Decision) {
-        guard let review, let path = currentReviewPath() else { return }
-        decisions[path] = decision
-        if groupFullyDecided(review.groupIndex) {
+        guard let review else { return }
+
+        guard !reviewSelection.isEmpty else {
+            guard let path = currentReviewPath() else { return }
+            decisions[path] = decision
+            if groupFullyDecided(review.groupIndex) {
+                reviewMoveBurst(1)
+            } else {
+                reviewMove(1)
+            }
+            return
+        }
+
+        let groupIndex = review.groupIndex
+        let fromIndex = review.itemIndex
+        for path in reviewSelection {
+            decisions[path] = decision
+        }
+        clearReviewSelection()
+
+        if groupFullyDecided(groupIndex) {
             reviewMoveBurst(1)
         } else {
-            reviewMove(1)
+            // `groupFullyDecided` false guarantees at least one Undecided
+            // (and so active) item remains somewhere in the group, so
+            // `nearestActiveIndex` always finds one from here.
+            self.review?.itemIndex = nearestActiveIndex(groupIndex: groupIndex, from: fromIndex) ?? fromIndex
+            prefetchLoupeNeighbors()
         }
     }
 
