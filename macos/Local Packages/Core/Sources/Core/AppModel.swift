@@ -68,7 +68,7 @@ public final class AppModel {
     /// reset in `loadFolder`, same as `finalizeTrashRejected` and the
     /// other toggles below, since it's about how you want to look at
     /// photos, not state tied to any one folder.
-    var showFocusArea = false
+    var showFocusArea = true
     var showFinalize = false
     var finalizeTrashRejected = true
     var finalizeCopyKeepers = true

@@ -307,7 +307,7 @@ private struct ReviewImageArea: View {
                                 let scaleX = fitted.width / area.referenceWidth
                                 let scaleY = fitted.height / area.referenceHeight
                                 Rectangle()
-                                    .stroke(Color.yellow, lineWidth: 2)
+                                    .stroke(Color.red, lineWidth: 2)
                                     .frame(width: area.width * scaleX, height: area.height * scaleY)
                                     .position(
                                         x: (area.x + area.width / 2) * scaleX,
