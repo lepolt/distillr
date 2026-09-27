@@ -89,6 +89,11 @@ public final class AppModel {
     /// `review.itemIndex` itself uses), not Grid's active-list-relative
     /// `GridFocus.activeIndex`. `nil` when there's no selection in progress.
     private var reviewSelectionAnchor: Int?
+    /// The most recently Kept/Rejected photo via `decideCurrentReviewItem`'s
+    /// single-photo path — what Undo reverses when the photo currently on
+    /// screen is already Undecided (e.g. right after auto-advancing past a
+    /// reject) and so has nothing of its own to undo.
+    private var lastDecidedPath: URL?
     var compare: CompareState?
     var gridFocus: GridFocus?
     /// Kept in sync by `GridView` from its `GeometryReader` width, so the
@@ -116,6 +121,7 @@ public final class AppModel {
         selected = []
         reviewSelection = []
         reviewSelectionAnchor = nil
+        lastDecidedPath = nil
         compare = nil
         gridFocus = nil
 
@@ -443,12 +449,36 @@ public final class AppModel {
     /// back and forth through already-decided (kept) photos. A no-op burst
     /// jump at the very last group (same clamping `reviewMoveBurst` always
     /// does) just leaves the final decided photo on screen.
+    ///
+    /// `.undecided` (Undo) never advances, even though it goes through
+    /// this same function — confirmed via debug logging that Undo really
+    /// was correctly resetting the current photo every time, then
+    /// immediately auto-advancing past it, which is exactly what made it
+    /// *look* broken: undoing a run of rejects felt like it was randomly
+    /// jumping around instead of just fixing the one photo you're
+    /// looking at. Undo is a corrective action, not a forward-progressing
+    /// review step, so it should leave you exactly where you are.
+    ///
+    /// But that alone still left the actual reported bug: reject a photo
+    /// (which auto-advances past it), then immediately press Undo — the
+    /// photo now on screen is whatever you advanced to, already
+    /// Undecided, so Undo had nothing to do and looked like it did
+    /// nothing at all. If the current photo already carries a real
+    /// decision, Undo resets it (mirrors Keep/Reject acting on whatever's
+    /// showing); otherwise it reverses `lastDecidedPath` instead, which is
+    /// what "Undo" actually means when you're looking at something you
+    /// haven't touched yet.
     func decideCurrentReviewItem(_ decision: Decision) {
         guard let review else { return }
 
         guard !reviewSelection.isEmpty else {
             guard let path = currentReviewPath() else { return }
+            if decision == .undecided {
+                undoLastOrCurrent(currentPath: path)
+                return
+            }
             decisions[path] = decision
+            lastDecidedPath = path
             if groupFullyDecided(review.groupIndex) {
                 reviewMoveBurst(1)
             } else {
@@ -463,6 +493,7 @@ public final class AppModel {
             decisions[path] = decision
         }
         clearReviewSelection()
+        guard decision != .undecided else { return }
 
         if groupFullyDecided(groupIndex) {
             reviewMoveBurst(1)
@@ -473,6 +504,43 @@ public final class AppModel {
             self.review?.itemIndex = nearestActiveIndex(groupIndex: groupIndex, from: fromIndex) ?? fromIndex
             prefetchLoupeNeighbors()
         }
+    }
+
+    /// Undo's actual target: the photo on screen if it already carries a
+    /// real decision, otherwise `lastDecidedPath` — reversing whichever
+    /// one actually needs it, and navigating there first if it isn't
+    /// already what's showing.
+    private func undoLastOrCurrent(currentPath: URL) {
+        // `decisions[currentPath]` is `nil`, not `.undecided`, for a photo
+        // that's never been touched — comparing the raw optional against
+        // `.undecided` directly would treat "never decided" the same as
+        // "has a real decision", which is exactly what broke this the
+        // first time.
+        if (decisions[currentPath] ?? .undecided) != .undecided {
+            decisions[currentPath] = .undecided
+            if lastDecidedPath == currentPath {
+                lastDecidedPath = nil
+            }
+            return
+        }
+        guard let target = lastDecidedPath, let location = locate(target) else { return }
+        decisions[target] = .undecided
+        review = ReviewState(groupIndex: location.groupIndex, itemIndex: location.itemIndex)
+        lastDecidedPath = nil
+        prefetchLoupeNeighbors()
+    }
+
+    /// Finds which group/index `path` currently lives at, searching every
+    /// group — used by Undo to jump back to a just-decided photo it's no
+    /// longer showing, which could be in the burst just auto-advanced away
+    /// from at the point `groupFullyDecided` also jumped to the next one.
+    private func locate(_ path: URL) -> (groupIndex: Int, itemIndex: Int)? {
+        for (groupIndex, group) in groups.enumerated() {
+            if let itemIndex = group.items.firstIndex(where: { $0.path == path }) {
+                return (groupIndex, itemIndex)
+            }
+        }
+        return nil
     }
 
     /// Decodes off the main actor — a synchronous decode here would block

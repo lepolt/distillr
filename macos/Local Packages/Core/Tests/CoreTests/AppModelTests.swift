@@ -363,6 +363,68 @@ struct AppModelTests {
         #expect(model.review?.itemIndex == 1, "burst still has undecided photos, so it just steps to the next one")
     }
 
+    @Test func undoingASingleItemStaysOnTheSamePhotoInsteadOfAdvancing() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        // enterReview *after* rejecting would redirect away from itemIndex 0
+        // (nearestActiveIndex skips rejected items), so reject only once
+        // review is already sitting on it.
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.decisions[pathAt(0)] = .reject
+
+        model.decideCurrentReviewItem(.undecided)
+
+        #expect(model.decisions[pathAt(0)] == .undecided)
+        #expect(model.review?.itemIndex == 0, "Undo is corrective, not a review step, so it shouldn't advance anywhere")
+    }
+
+    /// The actual reported bug: reject a photo through the real action (not
+    /// by poking `decisions` directly), which auto-advances past it, then
+    /// immediately press Undo. The photo on screen at that point is
+    /// whatever you auto-advanced to — already Undecided — so Undo has
+    /// nothing to do to it and the just-rejected photo is untouched. Undo
+    /// needs to reverse the decision that was actually just made, not
+    /// whatever happens to be showing.
+    @Test func undoRightAfterRejectingUndoesTheJustRejectedPhoto() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+
+        model.decideCurrentReviewItem(.reject) // rejects photo 0, auto-advances
+
+        #expect(model.decisions[pathAt(0)] == .reject)
+        #expect(model.review?.itemIndex != 0, "should have auto-advanced away from the just-rejected photo")
+
+        model.decideCurrentReviewItem(.undecided) // Undo
+
+        #expect(model.decisions[pathAt(0)] == .undecided, "Undo should reverse the reject just made, not the different photo now on screen")
+    }
+
+    @Test func undoingASelectionStaysOnTheSamePhotoInsteadOfAdvancing() {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        let pathAt = { (i: Int) in model.groups[0].items[i].path }
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.extendReviewSelection(1)
+        model.extendReviewSelection(1) // selects indices 0, 1, 2
+        // Rejected *after* building the selection: extendReviewSelection's
+        // stepping (like reviewMove's) skips rejected items, so rejecting
+        // first would prevent the range from ever reaching them.
+        model.decisions[pathAt(0)] = .reject
+        model.decisions[pathAt(1)] = .reject
+        model.decisions[pathAt(2)] = .reject
+
+        model.decideCurrentReviewItem(.undecided)
+
+        #expect(model.decisions[pathAt(0)] == .undecided)
+        #expect(model.decisions[pathAt(1)] == .undecided)
+        #expect(model.decisions[pathAt(2)] == .undecided)
+        #expect(model.reviewSelection.isEmpty)
+        #expect(model.review?.itemIndex == 2, "bulk Undo shouldn't jump anywhere either")
+    }
+
     @Test func decidingTheLastUndecidedItemInABurstAdvancesToTheNextBurst() {
         let model = AppModel()
         model.loadFolder(examplesDir())

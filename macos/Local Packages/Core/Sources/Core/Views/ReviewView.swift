@@ -7,6 +7,7 @@ struct ReviewView: View {
     /// See `ZoomPanController`'s doc comment — shared with `CompareView`,
     /// this instance is just for the one image here.
     @State private var zoom = ZoomPanController()
+    @State private var shiftArrowMonitor: Any?
 
     var body: some View {
         if let review = model.review, let path = model.currentReviewPath() {
@@ -52,9 +53,11 @@ struct ReviewView: View {
             model.loadLoupeImage(path)
             model.viewed.insert(path)
             zoom.installGestureMonitors()
+            installShiftArrowMonitor()
         }
         .onDisappear {
             zoom.removeGestureMonitors()
+            removeShiftArrowMonitor()
         }
         .onChange(of: path) { _, newPath in
             model.loadLoupeImage(newPath)
@@ -72,13 +75,29 @@ struct ReviewView: View {
     private var shortcuts: some View {
         ShortcutButton(key: .leftArrow) { model.reviewMove(-1) }
         ShortcutButton(key: .rightArrow) { model.reviewMove(1) }
-        ShortcutButton(key: .leftArrow, modifiers: [.shift]) { model.extendReviewSelection(-1) }
-        ShortcutButton(key: .rightArrow, modifiers: [.shift]) { model.extendReviewSelection(1) }
+        // Shift+Left/Right is NOT here — see installShiftArrowMonitor()
+        // below. A ShortcutButton for `.leftArrow`/`.rightArrow` WITH
+        // `modifiers: [.shift]` alongside the plain (no-modifier) ones
+        // above turned out to just never fire: pressing Shift+Arrow ran
+        // the plain arrow's action instead, with Shift silently ignored —
+        // apparently this app's invisible-ShortcutButton shortcut
+        // resolution doesn't reliably distinguish two entries that share a
+        // base key but differ only by modifiers. A raw NSEvent monitor,
+        // already the proven mechanism for exactly this kind of
+        // modifier-sensitive input in this codebase (see
+        // ZoomPanController's pinch/pan handling), sidesteps it entirely.
         ShortcutButton(key: .tab) { model.reviewMoveBurst(1) }
         ShortcutButton(key: .tab, modifiers: [.shift]) { model.reviewMoveBurst(-1) }
         ShortcutButton(key: KeyEquivalent("k")) { decide(.keep) }
         ShortcutButton(key: KeyEquivalent("x")) { decide(.reject) }
-        ShortcutButton(key: KeyEquivalent("u")) { decide(.undecided) }
+        // Not an invisible ShortcutButton like its siblings above — see the
+        // "Undo (U)" button in actionButtons, which carries this shortcut
+        // directly instead. Inserting the two new Shift+Arrow bindings
+        // above this list left "u" firing reviewMove(-1) (the left-arrow
+        // action) instead of decide(.undecided): the same invisible-
+        // button-goes-stale-when-its-neighbors-change class of SwiftUI bug
+        // already worked around for Esc and S, both of which are also on
+        // their visible button rather than here.
         ShortcutButton(key: KeyEquivalent("2")) { expandToCompare(2) }
         ShortcutButton(key: KeyEquivalent("3")) { expandToCompare(3) }
         ShortcutButton(key: KeyEquivalent("4")) { expandToCompare(4) }
@@ -97,6 +116,7 @@ struct ReviewView: View {
                 .padding(.leading, 20)
             Button("Reject (X)") { decide(.reject) }
             Button("Undo (U)") { decide(.undecided) }
+                .keyboardShortcut(KeyEquivalent("u"), modifiers: [])
             Button("Split burst here (S)") {
                 // Reads fresh from model.review rather than the itemIndex
                 // parameter above — see ShortcutButton's doc comment on
@@ -117,6 +137,36 @@ struct ReviewView: View {
 
     private func decide(_ decision: Decision) {
         model.decideCurrentReviewItem(decision)
+    }
+
+    /// Handles Shift+Left/Right directly via a passive `NSEvent` monitor —
+    /// see the comment on `shortcuts` above for why this isn't a
+    /// `ShortcutButton` like everything else here. Consumes (returns
+    /// `nil` for) a Shift-held arrow specifically so it can't also reach
+    /// the plain-arrow `ShortcutButton`, which is what caused Shift to be
+    /// silently ignored in the first place.
+    private func installShiftArrowMonitor() {
+        guard shiftArrowMonitor == nil else { return }
+        shiftArrowMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.contains(.shift) else { return event }
+            switch event.keyCode {
+            case 123: // left arrow
+                model.extendReviewSelection(-1)
+                return nil
+            case 124: // right arrow
+                model.extendReviewSelection(1)
+                return nil
+            default:
+                return event
+            }
+        }
+    }
+
+    private func removeShiftArrowMonitor() {
+        if let shiftArrowMonitor {
+            NSEvent.removeMonitor(shiftArrowMonitor)
+        }
+        shiftArrowMonitor = nil
     }
 
     private func expandToCompare(_ count: Int) {
