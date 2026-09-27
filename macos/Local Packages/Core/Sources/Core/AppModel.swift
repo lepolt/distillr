@@ -57,6 +57,18 @@ public final class AppModel {
     var review: ReviewState?
     var loupeCache: [URL: CGImage] = [:]
     private var loupeLoadsInFlight: Set<URL> = []
+    /// Shooting details (focal length, aperture, etc. — see
+    /// `PhotoDetails`) for whichever photos have actually been reviewed,
+    /// loaded lazily the same way `loupeCache` is. Never evicted — unlike
+    /// a decoded image, this is a tiny struct, so there's no memory
+    /// pressure to prune it the way `loupeCache` needs.
+    var photoDetails: [URL: PhotoDetails] = [:]
+    private var photoDetailsLoadsInFlight: Set<URL> = []
+    /// Display preference for the autofocus rectangle in Review — not
+    /// reset in `loadFolder`, same as `finalizeTrashRejected` and the
+    /// other toggles below, since it's about how you want to look at
+    /// photos, not state tied to any one folder.
+    var showFocusArea = false
     var showFinalize = false
     var finalizeTrashRejected = true
     var finalizeCopyKeepers = true
@@ -114,6 +126,7 @@ public final class AppModel {
         viewed = []
         review = nil
         loupeCache = [:]
+        photoDetails = [:]
         showFinalize = false
         finalizeDestination = nil
         finalizeDestinationError = nil
@@ -567,6 +580,24 @@ public final class AppModel {
             loupeCache[path] = image
         }
         pruneLoupeCache()
+    }
+
+    /// Same structure as `loadLoupeImage`: background read, cache fills in
+    /// once done. `photoDetails` is a tiny struct rather than a decoded
+    /// image, so unlike the loupe there's no reason to evict it once
+    /// loaded.
+    func loadPhotoDetails(_ path: URL) {
+        if photoDetails[path] != nil || photoDetailsLoadsInFlight.contains(path) { return }
+        photoDetailsLoadsInFlight.insert(path)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let details = PhotoDetailsReader.readDetails(path)
+            await self?.finishPhotoDetailsLoad(path, details: details)
+        }
+    }
+
+    private func finishPhotoDetailsLoad(_ path: URL, details: PhotoDetails) {
+        photoDetailsLoadsInFlight.remove(path)
+        photoDetails[path] = details
     }
 
     /// Bounds `loupeCache` to roughly what's on screen or about to be — the

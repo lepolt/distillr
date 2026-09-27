@@ -34,9 +34,17 @@ struct ReviewView: View {
                 Spacer()
             }
 
+            if let details = model.photoDetails[path] {
+                Text(details.summaryLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 Spacer()
                 ZoomSliderRow(controller: zoom)
+                Toggle("Show focus area", isOn: $model.showFocusArea)
+                    .disabled(model.photoDetails[path]?.focusArea == nil)
                 Spacer()
             }
 
@@ -51,6 +59,7 @@ struct ReviewView: View {
         .padding()
         .onAppear {
             model.loadLoupeImage(path)
+            model.loadPhotoDetails(path)
             model.viewed.insert(path)
             zoom.installGestureMonitors()
             installShiftArrowMonitor()
@@ -61,6 +70,7 @@ struct ReviewView: View {
         }
         .onChange(of: path) { _, newPath in
             model.loadLoupeImage(newPath)
+            model.loadPhotoDetails(newPath)
             model.viewed.insert(newPath)
             zoom.reset()
         }
@@ -281,11 +291,32 @@ private struct ReviewImageArea: View {
             ZStack {
                 Group {
                     if let image = model.loupeCache[path] {
-                        Image(decorative: image, scale: 1)
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .scaleEffect(zoom.liveScale)
-                            .offset(zoom.panOffset)
+                        // The focus rectangle lives *inside* this ZStack,
+                        // sharing the Image's own scaleEffect/offset, so it
+                        // zooms and pans together with the photo instead of
+                        // staying fixed over it. Its position/size are
+                        // fractions of `fitted` — the same box the Image
+                        // itself is proposed and exactly fills here, before
+                        // any transform — so no second GeometryReader is
+                        // needed.
+                        ZStack(alignment: .topLeading) {
+                            Image(decorative: image, scale: 1)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                            if model.showFocusArea, let area = model.photoDetails[path]?.focusArea {
+                                let scaleX = fitted.width / area.referenceWidth
+                                let scaleY = fitted.height / area.referenceHeight
+                                Rectangle()
+                                    .stroke(Color.yellow, lineWidth: 2)
+                                    .frame(width: area.width * scaleX, height: area.height * scaleY)
+                                    .position(
+                                        x: (area.x + area.width / 2) * scaleX,
+                                        y: (area.y + area.height / 2) * scaleY
+                                    )
+                            }
+                        }
+                        .scaleEffect(zoom.liveScale)
+                        .offset(zoom.panOffset)
                     } else {
                         ProgressView()
                     }
