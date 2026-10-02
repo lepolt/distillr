@@ -69,6 +69,7 @@ public final class AppModel {
     /// other toggles below, since it's about how you want to look at
     /// photos, not state tied to any one folder.
     var showFocusArea = true
+    var showPhotoInfo = true
     var showFinalize = false
     var finalizeTrashRejected = true
     var finalizeCopyKeepers = true

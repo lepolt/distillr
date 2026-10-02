@@ -34,22 +34,24 @@ struct ReviewView: View {
                 Spacer()
             }
 
-            if let details = model.photoDetails[path] {
-                Text(details.summaryLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             HStack {
                 Spacer()
                 ZoomSliderRow(controller: zoom)
                 Toggle("Show focus area", isOn: $model.showFocusArea)
                     .disabled(model.photoDetails[path]?.focusArea == nil)
+                Toggle("Show info", isOn: $model.showPhotoInfo)
                 Spacer()
             }
 
             ReviewImageArea(model: model, path: path, decision: decision, zoom: zoom)
                 .layoutPriority(1)
+                .overlay(alignment: .topLeading) {
+                    if model.showPhotoInfo, let details = model.photoDetails[path] {
+                        PhotoInfoCard(details: details)
+                            .padding(12)
+                            .allowsHitTesting(false)
+                    }
+                }
 
             actionButtons(itemIndex: itemIndex)
                 .frame(maxWidth: .infinity)

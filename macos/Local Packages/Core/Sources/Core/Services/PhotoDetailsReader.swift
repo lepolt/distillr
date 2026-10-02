@@ -31,7 +31,11 @@ enum PhotoDetailsReader {
             shutterSpeed: exif?[kCGImagePropertyExifExposureTime] as? Double,
             iso: (exif?[kCGImagePropertyExifISOSpeedRatings] as? [NSNumber])?.first?.intValue,
             exposureBias: exif?[kCGImagePropertyExifExposureBiasValue] as? Double,
-            whiteBalance: makerNikon?[kCGImagePropertyMakerNikonWhiteBalanceMode] as? String
+            whiteBalance: makerNikon?[kCGImagePropertyMakerNikonWhiteBalanceMode] as? String,
+            pixelWidth: props[kCGImagePropertyPixelWidth] as? Int,
+            pixelHeight: props[kCGImagePropertyPixelHeight] as? Int,
+            fileSize: (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init),
+            format: formatLabel(url)
         )
 
         if let subjectArea = subjectAreaRect(exif) {
@@ -50,6 +54,12 @@ enum PhotoDetailsReader {
     /// for any camera/phone that writes it, no custom parsing needed. This
     /// Nikon doesn't write it (checked all 9 sample NEFs), but it costs
     /// nothing to prefer it when present.
+    private static func formatLabel(_ url: URL) -> String? {
+        let ext = url.pathExtension.uppercased()
+        if ext.isEmpty { return nil }
+        return ext == "JPG" ? "JPEG" : ext
+    }
+
     private static func subjectAreaRect(_ exif: [CFString: Any]?) -> FocusArea? {
         guard let values = (exif?[kCGImagePropertyExifSubjectArea] as? [NSNumber])?.map(\.doubleValue) else {
             return nil

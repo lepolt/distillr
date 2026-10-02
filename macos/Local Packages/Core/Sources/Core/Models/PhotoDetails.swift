@@ -34,26 +34,45 @@ struct PhotoDetails: Equatable {
     var whiteBalance: String?
     var focusArea: FocusArea?
 
-    /// A single compact line for Review's header — camera, lens, focal
-    /// length, aperture, shutter, ISO, white balance, each skipped when
-    /// absent rather than showing a placeholder.
-    var summaryLine: String {
-        var parts: [String] = []
-        if let cameraModel { parts.append(cameraModel) }
-        if let lensModel { parts.append(lensModel) }
-        if let focalLength { parts.append("\(Int(focalLength))mm") }
-        if let aperture { parts.append("f/\(aperture.formatted(.number.precision(.fractionLength(0...1))))") }
-        if let shutterSpeed { parts.append(Self.formatShutterSpeed(shutterSpeed)) }
-        if let iso { parts.append("ISO \(iso)") }
-        if let whiteBalance { parts.append(whiteBalance) }
-        return parts.joined(separator: " · ")
+    var pixelWidth: Int?
+    var pixelHeight: Int?
+    var fileSize: Int64?
+    var format: String?
+
+    /// "24 MP", rounded to the nearest whole megapixel like Photos does.
+    var megapixelsText: String? {
+        guard let pixelWidth, let pixelHeight else { return nil }
+        return "\(Int((Double(pixelWidth * pixelHeight) / 1_000_000).rounded())) MP"
+    }
+
+    var dimensionsText: String? {
+        guard let pixelWidth, let pixelHeight else { return nil }
+        return "\(pixelWidth) × \(pixelHeight)"
+    }
+
+    var fileSizeText: String? {
+        fileSize.map { $0.formatted(.byteCount(style: .file)) }
+    }
+
+    /// The bottom row of the info card, in Photos' order, each skipped when
+    /// absent.
+    var exposureItems: [String] {
+        var items: [String] = []
+        if let iso { items.append("ISO \(iso)") }
+        if let focalLength { items.append("\(Int(focalLength.rounded())) mm") }
+        if let exposureBias {
+            items.append("\(exposureBias.formatted(.number.precision(.fractionLength(0...1)))) ev")
+        }
+        if let aperture { items.append("ƒ\(aperture.formatted(.number.precision(.fractionLength(0...1))))") }
+        if let shutterSpeed { items.append(Self.formatShutterSpeed(shutterSpeed)) }
+        return items
     }
 
     private static func formatShutterSpeed(_ seconds: Double) -> String {
-        guard seconds > 0 else { return "0s" }
+        guard seconds > 0 else { return "0 s" }
         if seconds >= 1 {
-            return "\(seconds.formatted(.number.precision(.fractionLength(0...1))))s"
+            return "\(seconds.formatted(.number.precision(.fractionLength(0...1)))) s"
         }
-        return "1/\(Int((1 / seconds).rounded()))s"
+        return "1/\(Int((1 / seconds).rounded())) s"
     }
 }

@@ -76,5 +76,10 @@ struct PhotoDetailsReaderTests {
         #expect(details.aperture == 4)
         #expect(details.shutterSpeed == 0.005)
         #expect(details.iso == 14400)
+        #expect(details.pixelWidth == 6048)
+        #expect(details.pixelHeight == 4032)
+        #expect(details.megapixelsText == "24 MP")
+        #expect(details.format == "NEF")
+        #expect((details.fileSize ?? 0) > 0)
     }
 }
