@@ -107,6 +107,10 @@ public final class AppModel {
     /// screen is already Undecided (e.g. right after auto-advancing past a
     /// reject) and so has nothing of its own to undo.
     private var lastDecidedPath: URL?
+    /// What the most recent `rejectRemainingInCurrentBurst` newly rejected,
+    /// so Undo can reverse the whole bulk action. Cleared by any later
+    /// single-photo decision.
+    private var lastBulkRejected: [URL] = []
     var compare: CompareState?
     var gridFocus: GridFocus?
     /// Kept in sync by `GridView` from its `GeometryReader` width, so the
@@ -136,6 +140,7 @@ public final class AppModel {
         reviewSelection = []
         reviewSelectionAnchor = nil
         lastDecidedPath = nil
+        lastBulkRejected = []
         compare = nil
         gridFocus = nil
 
@@ -493,6 +498,7 @@ public final class AppModel {
             }
             decisions[path] = decision
             lastDecidedPath = path
+            lastBulkRejected = []
             if groupFullyDecided(review.groupIndex) {
                 reviewMoveBurst(1)
             } else {
@@ -520,11 +526,39 @@ public final class AppModel {
         }
     }
 
+    /// Rejects every photo in the current burst that isn't Kept (including
+    /// ones never decided), then moves on to the next burst. Photos already
+    /// rejected are left alone and aren't part of what Undo restores.
+    func rejectRemainingInCurrentBurst() {
+        guard let review, let group = groups[safe: review.groupIndex] else { return }
+        let newlyRejected = group.items.map(\.path).filter {
+            let decision = decisions[$0] ?? .undecided
+            return decision != .keep && decision != .reject
+        }
+        guard !newlyRejected.isEmpty else { return }
+        for path in newlyRejected { decisions[path] = .reject }
+        clearReviewSelection()
+        lastDecidedPath = nil
+        lastBulkRejected = newlyRejected
+        reviewMoveBurst(1)
+    }
+
     /// Undo's actual target: the photo on screen if it already carries a
     /// real decision, otherwise `lastDecidedPath` — reversing whichever
     /// one actually needs it, and navigating there first if it isn't
     /// already what's showing.
     private func undoLastOrCurrent(currentPath: URL) {
+        if !lastBulkRejected.isEmpty,
+           (decisions[currentPath] ?? .undecided) == .undecided || lastBulkRejected.contains(currentPath) {
+            let restored = lastBulkRejected
+            lastBulkRejected = []
+            for path in restored { decisions[path] = .undecided }
+            if let first = restored.compactMap(locate).min(by: { ($0.groupIndex, $0.itemIndex) < ($1.groupIndex, $1.itemIndex) }) {
+                review = ReviewState(groupIndex: first.groupIndex, itemIndex: first.itemIndex)
+                prefetchLoupeNeighbors()
+            }
+            return
+        }
         // `decisions[currentPath]` is `nil`, not `.undecided`, for a photo
         // that's never been touched — comparing the raw optional against
         // `.undecided` directly would treat "never decided" the same as

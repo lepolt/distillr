@@ -127,6 +127,9 @@ struct ReviewView: View {
             Button("Keep (K)") { decide(.keep) }
                 .padding(.leading, 20)
             Button("Reject (X)") { decide(.reject) }
+            Button("Reject Remaining (Shift+R)") { model.rejectRemainingInCurrentBurst() }
+                .keyboardShortcut(KeyEquivalent("r"), modifiers: [.shift])
+                .help("Reject every photo in this burst that isn't Kept, then move to the next burst.")
             Button("Undo (U)") { decide(.undecided) }
                 .keyboardShortcut(KeyEquivalent("u"), modifiers: [])
             Button("Split burst here (S)") {

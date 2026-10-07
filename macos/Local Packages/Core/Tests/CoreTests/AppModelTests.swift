@@ -425,6 +425,45 @@ struct AppModelTests {
         #expect(model.review?.itemIndex == 2, "bulk Undo shouldn't jump anywhere either")
     }
 
+    @Test func rejectRemainingRejectsEverythingNotKeptAndAdvancesToTheNextBurst() throws {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        try #require(model.groups.count > 1)
+        let items = model.groups[0].items.map(\.path)
+        try #require(items.count >= 3)
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.decisions[items[1]] = .keep
+
+        model.rejectRemainingInCurrentBurst()
+
+        #expect(model.decisions[items[1]] == .keep, "kept photos must survive")
+        for (i, path) in items.enumerated() where i != 1 {
+            #expect(model.decisions[path] == .reject, "photo \(i) should be rejected")
+        }
+        #expect(model.review?.groupIndex == 1, "a fully decided burst advances to the next")
+    }
+
+    @Test func undoRightAfterRejectRemainingRestoresOnlyWhatItRejected() throws {
+        let model = AppModel()
+        model.loadFolder(examplesDir())
+        try #require(model.groups.count > 1)
+        let items = model.groups[0].items.map(\.path)
+        try #require(items.count >= 3)
+        model.enterReview(groupIndex: 0, itemIndex: 0)
+        model.decisions[items[0]] = .reject // already rejected before the bulk action
+        model.decisions[items[1]] = .keep
+
+        model.rejectRemainingInCurrentBurst()
+        model.decideCurrentReviewItem(.undecided) // Undo
+
+        #expect(model.decisions[items[0]] == .reject, "a pre-existing reject isn't part of the bulk action")
+        #expect(model.decisions[items[1]] == .keep)
+        for path in items.dropFirst(2) {
+            #expect(model.decisions[path] == .undecided)
+        }
+        #expect(model.review?.groupIndex == 0, "Undo should return to the burst it reverted")
+    }
+
     @Test func decidingTheLastUndecidedItemInABurstAdvancesToTheNextBurst() {
         let model = AppModel()
         model.loadFolder(examplesDir())
